@@ -3,11 +3,12 @@ import cv2
 import numpy as np
 import easyocr
 import os
+import time
 
-res='964000005802954360530600294429817536706005029350269040190000603203596400640103902'
+res='148352679739006500526000000070200050452003096090000040285010007917030000364827915'
 
 # 初始化EasyOCR读取器（只识别英文数字）
-reader = easyocr.Reader(['en'], gpu=False)
+reader = easyocr.Reader(['en'], gpu=True)
 
 # 创建输出目录
 output_dir = "process_images"
@@ -168,7 +169,7 @@ def order_points(pts):
 
 
 def recognize_digit_with_position_info(cell_image):
-    """识别数字并返回位置信息"""
+    """识别数字并返回位置信息，如果识别到多个数字则过滤掉"""
     # EasyOCR识别
     if len(cell_image.shape) == 2:
         cell_image_color = cv2.cvtColor(cell_image, cv2.COLOR_GRAY2BGR)
@@ -177,9 +178,11 @@ def recognize_digit_with_position_info(cell_image):
     
     results = reader.readtext(cell_image_color, allowlist='123456789', width_ths=0.1, height_ths=0.1)
     
+    all_digits = []  # 存储所有找到的数字信息
+    
     if results:
         for (bbox, text, confidence) in results:
-            if confidence > 0.3 and text.isdigit() and len(text) == 1:
+            if confidence > 0.3 and text.isdigit():
                 # bbox包含四个点的坐标
                 bbox_array = np.array(bbox)
                 x_min = int(bbox_array[:, 0].min())
@@ -187,32 +190,74 @@ def recognize_digit_with_position_info(cell_image):
                 x_max = int(bbox_array[:, 0].max())
                 y_max = int(bbox_array[:, 1].max())
                 
+                # 如果是单个数字
+                if len(text) == 1:
+                    all_digits.append({
+                        'digit': int(text),
+                        'position': (x_min, y_min, x_max, y_max),
+                        'confidence': confidence,
+                        'area': (x_max - x_min) * (y_max - y_min)
+                    })
+                else:
+                    # 如果OCR识别出连续数字字符串，拆分为单个数字
+                    for digit_char in text:
+                        if digit_char.isdigit():
+                            all_digits.append({
+                                'digit': int(digit_char),
+                                'position': (x_min, y_min, x_max, y_max),  # 共享同一区域
+                                'confidence': confidence,
+                                'area': (x_max - x_min) * (y_max - y_min),
+                                'from_multi_char': True  # 标记来自多字符识别
+                            })
+    
+    # 判断策略
+    if len(all_digits) == 0:
+        # 没有识别到数字，尝试轮廓分析
+        contours, _ = cv2.findContours(cell_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(largest_contour) >= 50:
+                x, y, w, h = cv2.boundingRect(largest_contour)
                 return {
-                    'digit': int(text),
-                    'position': (x_min, y_min, x_max, y_max),
-                    'confidence': confidence,
-                    'found': True
+                    'digit': 0,  # 轮廓分析不返回具体数字
+                    'position': (x, y, x+w, y+h),
+                    'confidence': 0.0,
+                    'found': True,
+                    'filtered_reason': None
                 }
+        
+        return {
+            'digit': 0,
+            'position': None,
+            'confidence': 0.0,
+            'found': False,
+            'filtered_reason': None
+        }
     
-    # 备用方法：轮廓分析
-    contours, _ = cv2.findContours(cell_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        largest_contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest_contour) >= 50:
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            return {
-                'digit': 0,  # 轮廓分析不返回具体数字，但标记找到了内容
-                'position': (x, y, x+w, y+h),
-                'confidence': 0.0,
-                'found': True
-            }
+    elif len(all_digits) == 1:
+        # 只有一个数字，正常返回
+        digit_info = all_digits[0]
+        return {
+            'digit': digit_info['digit'],
+            'position': digit_info['position'],
+            'confidence': digit_info['confidence'],
+            'found': True,
+            'filtered_reason': None
+        }
     
-    return {
-        'digit': 0,
-        'position': None,
-        'confidence': 0.0,
-        'found': False
-    }
+    else:
+        # 识别到多个数字，进行过滤
+        # 选择面积最大且置信度最高的数字用于位置信息显示
+        best_digit = max(all_digits, key=lambda x: (x['area'], x['confidence']))
+        digit_list = [str(d['digit']) for d in all_digits]
+        
+        return {
+            'digit': 0,  # 过滤掉，设置为0
+            'position': best_digit['position'],
+            'confidence': best_digit['confidence'],
+            'found': True,
+            'filtered_reason': f"识别到多个数字: {', '.join(digit_list)}"
+        }
 
 
 def extract_digits_from_grid(image, grid_corners, output_dir):
@@ -254,27 +299,52 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     # 计算单元格尺寸
     cell_width = w // 9
     cell_height = h // 9
+    
+    # 创建单元格处理步骤的保存目录
+    cells_dir = os.path.join(output_dir, 'cells_processing_steps')
+    if not os.path.exists(cells_dir):
+        os.makedirs(cells_dir)
 
     print("开始识别每个单元格的数字...")
     for row in range(9):
         sudoku_row = []
         for col in range(9):
+            # 计算更大的边距来避免截取到网格边框线
+            # 使用单元格尺寸的15%作为边距，最少12像素
+            margin_x = max(int(cell_width * 0.15), 12)
+            margin_y = max(int(cell_height * 0.15), 12)
+            
             # 计算单元格在裁剪图像中的坐标
-            cell_x = col * cell_width + 5  # 添加边距
-            cell_y = row * cell_height + 5
-            cell_w = cell_width - 10  # 减少边距
-            cell_h = cell_height - 10
+            cell_x = col * cell_width + margin_x
+            cell_y = row * cell_height + margin_y
+            cell_w = cell_width - 2 * margin_x  # 左右各减去边距
+            cell_h = cell_height - 2 * margin_y  # 上下各减去边距
+
+            # 确保不会越界
+            cell_x = max(0, cell_x)
+            cell_y = max(0, cell_y)
+            cell_w = min(cell_w, w - cell_x)
+            cell_h = min(cell_h, h - cell_y)
 
             # 提取单元格
             cell = grid_roi[cell_y:cell_y + cell_h, cell_x:cell_x + cell_w]
 
             # 进一步处理单元格
-            if cell.size > 0:
+            if cell.size > 0 and cell_w > 0 and cell_h > 0:
+                # 保存原始截取的单元格
+                cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_01_original.jpg'), cell)
+                
                 # 对单元格进行额外的预处理
                 cell_cleaned = preprocess_cell(cell)
                 
+                # 保存预处理后的单元格
+                cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_02_cleaned.jpg'), cell_cleaned)
+                
                 # 调整大小以提高OCR准确性
                 cell_resized = cv2.resize(cell_cleaned, (84, 84))
+                
+                # 保存最终喂给OCR的单元格（这是实际识别的图像）
+                cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_03_final_for_ocr.jpg'), cell_resized)
 
                 # 使用改进的识别函数获取数字和位置信息
                 result_info = recognize_digit_with_position_info(cell_resized)
@@ -292,22 +362,74 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
                     # 在调整后的84x84图像中，方格的有效宽度和高度都是84
                     resized_cell_width = 84
                     resized_cell_height = 84
-                    min_required_width = resized_cell_width * 0.4   # 方格宽度的40%
-                    min_required_height = resized_cell_height * 0.4  # 方格高度的40%
+                    min_required_width = resized_cell_width * 0.5   # 方格宽度的40%
+                    min_required_height = resized_cell_height * 0.5  # 方格高度的40%
                     
-                    # 检查宽度和高度，只要有一个不满足就过滤
-                    if digit_width < min_required_width or digit_height < min_required_height:
-                        if digit_width < min_required_width and digit_height < min_required_height:
-                            filter_reason = f"宽度{digit_width}px和高度{digit_height}px都小于最小要求{min_required_width:.1f}px"
-                        elif digit_width < min_required_width:
-                            filter_reason = f"宽度{digit_width}px小于最小要求{min_required_width:.1f}px"
-                        else:
-                            filter_reason = f"高度{digit_height}px小于最小要求{min_required_height:.1f}px"
+                    # 检查宽度和高度，只有两个都小于最小要求才过滤
+                    if digit_width < min_required_width and digit_height < min_required_height:
+                        filter_reason = f"宽度{digit_width}px和高度{digit_height}px都小于最小要求{min_required_width:.1f}px"
                         
                         print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
                         digit = 0  # 将数字设为0（无数字）
                         size_check_passed = False
                         filtered_count += 1
+                
+                # 新增：显示多数字过滤信息
+                if result_info.get('filtered_reason'):
+                    print(f"方格({row},{col}) {result_info['filtered_reason']}，过滤掉")
+                    filtered_count += 1
+                
+                # 如果识别到了数字，在最终OCR图像上标注识别结果
+                if digit > 0:
+                    # 创建一个带标注的版本
+                    cell_annotated = cv2.cvtColor(cell_resized, cv2.COLOR_GRAY2BGR) if len(cell_resized.shape) == 2 else cell_resized.copy()
+                    
+                    # 如果有位置信息，画出识别区域
+                    if result_info['position']:
+                        x_min, y_min, x_max, y_max = result_info['position']
+                        cv2.rectangle(cell_annotated, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                        cv2.putText(cell_annotated, f"Digit: {digit}", (5, 15), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                        cv2.putText(cell_annotated, f"Conf: {result_info['confidence']:.2f}", (5, 30), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                    
+                    cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_04_annotated_result.jpg'), cell_annotated)
+                elif result_info.get('filtered_reason'):
+                    # 为被多数字过滤的方格也创建标注图像
+                    cell_annotated = cv2.cvtColor(cell_resized, cv2.COLOR_GRAY2BGR) if len(cell_resized.shape) == 2 else cell_resized.copy()
+                    
+                    if result_info['position']:
+                        x_min, y_min, x_max, y_max = result_info['position']
+                        cv2.rectangle(cell_annotated, (x_min, y_min), (x_max, y_max), (0, 165, 255), 2)  # 橙色框
+                        cv2.putText(cell_annotated, "Multi-digits", (5, 15), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+                        cv2.putText(cell_annotated, "FILTERED", (5, 30), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+                    
+                    cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_04_annotated_result.jpg'), cell_annotated)
+                
+                # 同时保存一个对比图，显示边距效果
+                if row < 3 and col < 3:  # 只为前几个单元格创建对比图
+                    # 创建一个显示裁剪区域的图像
+                    crop_demo = grid_roi.copy()
+                    if len(crop_demo.shape) == 2:
+                        crop_demo = cv2.cvtColor(crop_demo, cv2.COLOR_GRAY2BGR)
+                    
+                    # 绘制原始网格线
+                    orig_x = col * cell_width
+                    orig_y = row * cell_height
+                    orig_w = cell_width
+                    orig_h = cell_height
+                    cv2.rectangle(crop_demo, (orig_x, orig_y), (orig_x + orig_w, orig_y + orig_h), (255, 0, 0), 2)  # 蓝色：原始网格
+                    
+                    # 绘制实际裁剪区域
+                    cv2.rectangle(crop_demo, (cell_x, cell_y), (cell_x + cell_w, cell_y + cell_h), (0, 255, 0), 2)  # 绿色：实际裁剪区域
+                    
+                    # 添加文字说明
+                    cv2.putText(crop_demo, "Blue: Grid", (orig_x, orig_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+                    cv2.putText(crop_demo, "Green: Crop", (cell_x, cell_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                    
+                    cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_00_crop_area_demo.jpg'), crop_demo)
                 
                 sudoku_row.append(digit)
                 
@@ -334,10 +456,6 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
                         'size_filtered': not size_check_passed,  # 标记是否被尺寸条件过滤
                         'filter_reason': filter_reason if not size_check_passed else ""
                     })
-                
-                # 保存一些单元格示例（可选）
-                if row < 3 and col < 3:  # 只保存前几个单元格作为示例
-                    cv2.imwrite(os.path.join(output_dir, f'cell_{row}_{col}.jpg'), cell_resized)
             else:
                 sudoku_row.append(0)
 
@@ -397,6 +515,7 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     
     print(f"识别到 {len(recognized_digits)} 个数字，检测到 {len(detected_content)} 个未识别内容")
     print(f"因尺寸条件过滤掉 {filtered_count} 个可能的误识别")
+    print(f"所有单元格的处理步骤图像已保存到: {cells_dir}")
     
     return sudoku_array
 
@@ -544,6 +663,13 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
 
 def main():
     """主程序"""
+    # 记录程序开始时间
+    start_time = time.time()
+    print("=" * 60)
+    print("数独识别程序开始运行...")
+    print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+    print("=" * 60)
+    
     image_path = "image.png"
     
     # 要测试的阈值化参数数组（去掉参数9，加入参数13）
@@ -597,6 +723,28 @@ def main():
     for param in threshold_params:
         print(f"- process_images_threshold_{param}")
         print(f"  └── sudoku_result_threshold_{param}.txt")
+    
+    # 记录程序结束时间并计算总耗时
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    print("\n" + "=" * 60)
+    print("程序运行完成！")
+    print(f"结束时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+    print(f"总耗时: {total_time:.2f} 秒")
+    
+    # 将耗时转换为更易读的格式
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = total_time % 60
+    
+    if hours > 0:
+        print(f"总耗时(详细): {hours}小时 {minutes}分钟 {seconds:.2f}秒")
+    elif minutes > 0:
+        print(f"总耗时(详细): {minutes}分钟 {seconds:.2f}秒")
+    else:
+        print(f"总耗时(详细): {seconds:.2f}秒")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
