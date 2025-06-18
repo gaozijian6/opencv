@@ -5,10 +5,10 @@ import easyocr
 import os
 import time
 
-res='148352679739006500526000000070200050452003096090000040285010007917030000364827915'
+res='500169000004000070600000800000802050003000200080401000001000003060000400000546009'
 
 # 初始化EasyOCR读取器（只识别英文数字）
-reader = easyocr.Reader(['en'], gpu=True)
+reader = easyocr.Reader(['en', 'ch_sim'], gpu=True)  # 支持英文和简体中文识别
 
 # 创建输出目录
 output_dir = "process_images"
