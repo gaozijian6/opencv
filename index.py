@@ -5,10 +5,10 @@ import easyocr
 import os
 import time
 
-res='500169000004000070600000800000802050003000200080401000001000003060000400000546009'
+res='946157000128090705573280000734928000810760000690000078287040610469800057351670004'
 
 # 初始化EasyOCR读取器（只识别英文数字）
-reader = easyocr.Reader(['en', 'ch_sim'], gpu=True)  # 支持英文和简体中文识别
+reader = easyocr.Reader(['en', 'ch_sim'], gpu=False)  # 支持英文和简体中文识别
 
 # 创建输出目录
 output_dir = "process_images"
@@ -176,7 +176,7 @@ def recognize_digit_with_position_info(cell_image):
     else:
         cell_image_color = cell_image
     
-    results = reader.readtext(cell_image_color, allowlist='123456789', width_ths=0.1, height_ths=0.1)
+    results = reader.readtext(cell_image_color, allowlist='123456789',paragraph=False)
     
     all_digits = []  # 存储所有找到的数字信息
     
@@ -280,13 +280,18 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     # 创建一个用于绘制数字边界框的图像
     grid_with_digit_boxes = grid_with_lines.copy()
     
-    cell_width = w // 9
-    cell_height = h // 9
+    # 创建在二值图上绘制单元格边界的图像
+    processed_with_cells = image.copy()
+    if len(processed_with_cells.shape) == 2:  # 如果是灰度图，转换为彩色以便绘制彩色线条
+        processed_with_cells = cv2.cvtColor(processed_with_cells, cv2.COLOR_GRAY2BGR)
+    
+    cell_width = w / 9
+    cell_height = h / 9
     for i in range(10):  # 绘制10条线（0到9）
         # 绘制垂直线
-        cv2.line(grid_with_lines, (i * cell_width, 0), (i * cell_width, h), (0, 255, 0), 1)
+        cv2.line(grid_with_lines, (int(i * cell_width), 0), (int(i * cell_width), h), (0, 255, 0), 1)
         # 绘制水平线
-        cv2.line(grid_with_lines, (0, i * cell_height), (w, i * cell_height), (0, 255, 0), 1)
+        cv2.line(grid_with_lines, (0, int(i * cell_height)), (w, int(i * cell_height)), (0, 255, 0), 1)
     
     cv2.imwrite(os.path.join(output_dir, '8_grid_with_lines.jpg'), grid_with_lines)
     print("网格线图像已保存")
@@ -297,8 +302,8 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     filtered_count = 0    # 记录被尺寸条件过滤掉的数字数量
 
     # 计算单元格尺寸
-    cell_width = w // 9
-    cell_height = h // 9
+    cell_width = w / 9
+    cell_height = h / 9
     
     # 创建单元格处理步骤的保存目录
     cells_dir = os.path.join(output_dir, 'cells_processing_steps')
@@ -309,22 +314,34 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     for row in range(9):
         sudoku_row = []
         for col in range(9):
-            # 计算更大的边距来避免截取到网格边框线
-            # 使用单元格尺寸的15%作为边距，最少12像素
-            margin_x = max(int(cell_width * 0.15), 12)
-            margin_y = max(int(cell_height * 0.15), 12)
+            # 只使用百分比边距
+            margin_x = int(cell_width * 0.08)
+            margin_y = int(cell_height * 0.08)
             
-            # 计算单元格在裁剪图像中的坐标
-            cell_x = col * cell_width + margin_x
-            cell_y = row * cell_height + margin_y
-            cell_w = cell_width - 2 * margin_x  # 左右各减去边距
-            cell_h = cell_height - 2 * margin_y  # 上下各减去边距
+            # 计算单元格在裁剪图像中的坐标，转换为整数
+            cell_x = int(col * cell_width + margin_x)
+            cell_y = int(row * cell_height + margin_y)
+            cell_w = int(cell_width - 2 * margin_x)  # 左右各减去边距
+            cell_h = int(cell_height - 2 * margin_y)  # 上下各减去边距
 
             # 确保不会越界
             cell_x = max(0, cell_x)
             cell_y = max(0, cell_y)
             cell_w = min(cell_w, w - cell_x)
             cell_h = min(cell_h, h - cell_y)
+
+            # 在二值图上绘制蓝色细线的单元格边界
+            # 将相对于裁剪区域的坐标转换为整个图像的坐标
+            proc_cell_x = x + cell_x
+            proc_cell_y = y + cell_y
+            proc_cell_x2 = x + cell_x + cell_w
+            proc_cell_y2 = y + cell_y + cell_h
+            
+            # 使用蓝色细线绘制单元格边界
+            cv2.rectangle(processed_with_cells, 
+                        (proc_cell_x, proc_cell_y), 
+                        (proc_cell_x2, proc_cell_y2), 
+                        (255, 101, 0), 1)  # 蓝色 (BGR格式)，线宽1像素
 
             # 提取单元格
             cell = grid_roi[cell_y:cell_y + cell_h, cell_x:cell_x + cell_w]
@@ -362,8 +379,8 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
                     # 在调整后的84x84图像中，方格的有效宽度和高度都是84
                     resized_cell_width = 84
                     resized_cell_height = 84
-                    min_required_width = resized_cell_width * 0.5   # 方格宽度的40%
-                    min_required_height = resized_cell_height * 0.5  # 方格高度的40%
+                    min_required_width = resized_cell_width * 0.5   # 方格宽度的50%
+                    min_required_height = resized_cell_height * 0.5  # 方格高度的50%
                     
                     # 检查宽度和高度，只有两个都小于最小要求才过滤
                     if digit_width < min_required_width and digit_height < min_required_height:
@@ -372,6 +389,26 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
                         print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
                         digit = 0  # 将数字设为0（无数字）
                         size_check_passed = False
+                        filtered_count += 1
+                
+                # 新增：位置检查
+                if result_info['found'] and result_info['position'] and digit > 0 and size_check_passed:
+                    x_min, y_min, x_max, y_max = result_info['position']
+                    
+                    # 在84x84的图像中，中间位置是42
+                    center_x = 42
+                    
+                    # 检查左上角是否在中间位置右边
+                    if x_min > center_x:
+                        filter_reason = f"左上角位置({x_min})在方格中间({center_x})右边"
+                        print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                        digit = 0
+                        filtered_count += 1
+                    # 检查右上角是否在中间位置左边
+                    elif x_max < center_x:
+                        filter_reason = f"右上角位置({x_max})在方格中间({center_x})左边"
+                        print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                        digit = 0
                         filtered_count += 1
                 
                 # 新增：显示多数字过滤信息
@@ -415,11 +452,11 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
                     if len(crop_demo.shape) == 2:
                         crop_demo = cv2.cvtColor(crop_demo, cv2.COLOR_GRAY2BGR)
                     
-                    # 绘制原始网格线
-                    orig_x = col * cell_width
-                    orig_y = row * cell_height
-                    orig_w = cell_width
-                    orig_h = cell_height
+                    # 绘制原始网格线，转换为整数
+                    orig_x = int(col * cell_width)
+                    orig_y = int(row * cell_height)
+                    orig_w = int(cell_width)
+                    orig_h = int(cell_height)
                     cv2.rectangle(crop_demo, (orig_x, orig_y), (orig_x + orig_w, orig_y + orig_h), (255, 0, 0), 2)  # 蓝色：原始网格
                     
                     # 绘制实际裁剪区域
@@ -508,6 +545,10 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     # 保存带有数字边界框的图像
     cv2.imwrite(os.path.join(output_dir, '9_grid_with_digit_boxes.jpg'), grid_with_digit_boxes)
     print(f"数字边界框图像已保存到 {os.path.join(output_dir, '9_grid_with_digit_boxes.jpg')}")
+    
+    # 保存带有蓝色单元格边界的二值图像
+    cv2.imwrite(os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg'), processed_with_cells)
+    print(f"带单元格边界的二值图像已保存到 {os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg')}")
     
     # 打印识别到的数字位置统计
     recognized_digits = [pos for pos in digit_positions if pos['digit'] > 0]
@@ -670,10 +711,11 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image.png"
+    image_path = "image2.jpg"
     
     # 要测试的阈值化参数数组（去掉参数9，加入参数13）
-    threshold_params = [11, 13, 15,17, 19]
+    # threshold_params = [13, 15,17, 19]
+    threshold_params = [23]
     
     print("开始使用不同阈值化参数识别数独图片...")
     print(f"将测试参数: {threshold_params}")
