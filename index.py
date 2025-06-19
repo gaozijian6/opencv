@@ -8,7 +8,7 @@ import time
 res='946157000128090705573280000734928000810760000690000078287040610469800057351670004'
 
 # 初始化EasyOCR读取器（只识别英文数字）
-reader = easyocr.Reader(['en', 'ch_sim'], gpu=False)  # 支持英文和简体中文识别
+reader = easyocr.Reader(['en', 'ch_sim'], gpu=True)  # 支持英文和简体中文识别
 
 # 创建输出目录
 output_dir = "process_images"
@@ -281,7 +281,8 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     grid_with_digit_boxes = grid_with_lines.copy()
     
     # 创建在二值图上绘制单元格边界的图像
-    processed_with_cells = image.copy()
+    # 只取网格区域，不要方框外的内容
+    processed_with_cells = image[y:y+h, x:x+w].copy()
     if len(processed_with_cells.shape) == 2:  # 如果是灰度图，转换为彩色以便绘制彩色线条
         processed_with_cells = cv2.cvtColor(processed_with_cells, cv2.COLOR_GRAY2BGR)
     
@@ -330,17 +331,11 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
             cell_w = min(cell_w, w - cell_x)
             cell_h = min(cell_h, h - cell_y)
 
-            # 在二值图上绘制蓝色细线的单元格边界
-            # 将相对于裁剪区域的坐标转换为整个图像的坐标
-            proc_cell_x = x + cell_x
-            proc_cell_y = y + cell_y
-            proc_cell_x2 = x + cell_x + cell_w
-            proc_cell_y2 = y + cell_y + cell_h
-            
-            # 使用蓝色细线绘制单元格边界
+            # 在裁剪后的网格图像上绘制蓝色细线的单元格边界
+            # 由于processed_with_cells现在是裁剪后的网格区域，直接使用相对坐标
             cv2.rectangle(processed_with_cells, 
-                        (proc_cell_x, proc_cell_y), 
-                        (proc_cell_x2, proc_cell_y2), 
+                        (cell_x, cell_y), 
+                        (cell_x + cell_w, cell_y + cell_h), 
                         (255, 101, 0), 1)  # 蓝色 (BGR格式)，线宽1像素
 
             # 提取单元格
@@ -715,7 +710,7 @@ def main():
     
     # 要测试的阈值化参数数组（去掉参数9，加入参数13）
     # threshold_params = [13, 15,17, 19]
-    threshold_params = [23]
+    threshold_params = [19]
     
     print("开始使用不同阈值化参数识别数独图片...")
     print(f"将测试参数: {threshold_params}")
