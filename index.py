@@ -71,7 +71,7 @@ def calculate_accuracy(sudoku_array, standard_array):
         'total_empty': total_empty
     }
 
-def preprocess_image(image, threshold_param, output_dir):
+def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpen=True):
     """预处理图像以提高OCR识别准确率"""
     # 转换为灰度图
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -79,25 +79,36 @@ def preprocess_image(image, threshold_param, output_dir):
     # 高斯模糊
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     
+    # 根据参数决定是否添加锐化效果
+    if use_sharpen:
+        sharpen_kernel = np.array([[ 0, -1,  0],
+                                  [-1,  5, -1],
+                                  [ 0, -1,  0]], dtype=np.float32)
+        sharpened = cv2.filter2D(blurred, -1, sharpen_kernel)
+        processed_blur = sharpened
+        cv2.imwrite(os.path.join(output_dir, '2.3_sharpened.jpg'), sharpened)
+    else:
+        processed_blur = blurred
+    
     # 中值滤波，去除椒盐噪声
-    median_filtered = cv2.medianBlur(blurred, 3)
+    median_filtered = cv2.medianBlur(processed_blur, 3)
 
     # 自适应阈值化 - 使用传入的参数
     thresh = cv2.adaptiveThreshold(
         median_filtered, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, threshold_param, 2
     )
 
-    # 多步形态学操作去除噪声
+    # 多步形态学操作去除噪声 - 使用传入的kernel大小
     # 第一步：开运算去除小的白色噪点
-    kernel_open = np.ones((2, 2), np.uint8)
+    kernel_open = np.ones((kernel_size, kernel_size), np.uint8)
     opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open, iterations=1)
     
     # 第二步：闭运算填充数字内部的小孔
-    kernel_close = np.ones((3, 3), np.uint8)
+    kernel_close = np.ones((kernel_size, kernel_size), np.uint8)
     closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close, iterations=1)
     
     # 第三步：再次开运算进一步清理噪点
-    kernel_clean = np.ones((2, 2), np.uint8)
+    kernel_clean = np.ones((kernel_size, kernel_size), np.uint8)
     processed = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_clean, iterations=1)
 
     # 保存预处理结果到指定文件夹
@@ -108,7 +119,9 @@ def preprocess_image(image, threshold_param, output_dir):
     cv2.imwrite(os.path.join(output_dir, '3.5_after_opening.jpg'), opened)
     cv2.imwrite(os.path.join(output_dir, '3.7_after_closing.jpg'), closed)
     cv2.imwrite(os.path.join(output_dir, '4_final_processed.jpg'), processed)
-    print(f"预处理图像已保存到 {output_dir} 文件夹 (threshold_param={threshold_param})")
+    
+    sharpen_status = "已添加锐化效果" if use_sharpen else "未使用锐化"
+    print(f"预处理图像已保存到 {output_dir} 文件夹 (threshold_param={threshold_param}, kernel_size={kernel_size}x{kernel_size}, {sharpen_status})")
     
     return processed
 
@@ -260,7 +273,7 @@ def recognize_digit_with_position_info(cell_image):
         }
 
 
-def extract_digits_from_grid(image, grid_corners, output_dir):
+def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_sharpen=True):
     """从数独网格中提取每个单元格的数字（不使用透视变换）"""
     # 获取网格的边界矩形
     x, y, w, h = cv2.boundingRect(grid_corners)
@@ -346,8 +359,8 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
                 # 保存原始截取的单元格
                 cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_01_original.jpg'), cell)
                 
-                # 对单元格进行额外的预处理
-                cell_cleaned = preprocess_cell(cell)
+                # 对单元格进行额外的预处理 - 传入kernel_size和锐化参数
+                cell_cleaned = preprocess_cell(cell, kernel_size, use_sharpen)
                 
                 # 保存预处理后的单元格
                 cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_02_cleaned.jpg'), cell_cleaned)
@@ -556,19 +569,29 @@ def extract_digits_from_grid(image, grid_corners, output_dir):
     return sudoku_array
 
 
-def preprocess_cell(cell):
+def preprocess_cell(cell, kernel_size, use_sharpen=True):
     """对单个单元格进行预处理"""
     # 高斯模糊
     blurred = cv2.GaussianBlur(cell, (3, 3), 0)
     
-    # 形态学操作去除噪点
-    kernel = np.ones((2, 2), np.uint8)
-    opened = cv2.morphologyEx(blurred, cv2.MORPH_OPEN, kernel)
+    # 根据参数决定是否添加锐化效果
+    if use_sharpen:
+        sharpen_kernel = np.array([[ 0, -1,  0],
+                                  [-1,  5, -1],
+                                  [ 0, -1,  0]], dtype=np.float32)
+        sharpened = cv2.filter2D(blurred, -1, sharpen_kernel)
+        processed_blur = sharpened
+    else:
+        processed_blur = blurred
+    
+    # 形态学操作去除噪点 - 使用传入的kernel大小
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    opened = cv2.morphologyEx(processed_blur, cv2.MORPH_OPEN, kernel)
     
     return opened
 
 
-def recognize_sudoku_digits(image_path, threshold_param, output_dir):
+def recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir, use_sharpen=True):
     """主函数：识别数独图片中的数字"""
     # 读取图像
     image = cv2.imread(image_path)
@@ -582,20 +605,21 @@ def recognize_sudoku_digits(image_path, threshold_param, output_dir):
     print(f"原始图像已保存到 {output_dir}")
 
     # 预处理图像
-    processed = preprocess_image(image, threshold_param, output_dir)
+    processed = preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpen)
 
     # 找到数独网格
     grid_corners = find_sudoku_grid(processed, output_dir)
 
     # 从网格中提取数字
-    sudoku_digits = extract_digits_from_grid(processed, grid_corners, output_dir)
+    sudoku_digits = extract_digits_from_grid(processed, grid_corners, kernel_size, output_dir, use_sharpen)
 
     return sudoku_digits
 
 
-def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
+def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param, kernel_size, use_sharpen):
     """将数独识别结果保存到txt文件"""
-    txt_filename = os.path.join(output_dir, f'sudoku_result_threshold_{threshold_param}.txt')
+    sharpen_suffix = "锐化" if use_sharpen else "无锐化"
+    txt_filename = os.path.join(output_dir, f'数独识别结果_卷积核{kernel_size}_阈值{threshold_param}_{sharpen_suffix}.txt')
     
     # 获取标准答案
     standard_array = convert_res_to_array(res)
@@ -604,8 +628,8 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
     accuracy_stats = calculate_accuracy(sudoku_array, standard_array)
     
     with open(txt_filename, 'w', encoding='utf-8') as f:
-        f.write(f"数独识别结果 (阈值参数: {threshold_param})\n")
-        f.write("=" * 60 + "\n\n")
+        f.write(f"数独识别结果 (阈值参数: {threshold_param}, 卷积核大小: {kernel_size}x{kernel_size}, 锐化: {'是' if use_sharpen else '否'})\n")
+        f.write("=" * 70 + "\n\n")
         
         # 标准答案显示
         f.write("标准答案:\n")
@@ -625,7 +649,7 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
 
             f.write(row_str + "\n")
         
-        f.write("\n" + "=" * 60 + "\n")
+        f.write("\n" + "=" * 70 + "\n")
         
         # 识别结果显示
         f.write("识别结果:\n")
@@ -645,7 +669,7 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
 
             f.write(row_str + "\n")
         
-        f.write("\n" + "=" * 60 + "\n")
+        f.write("\n" + "=" * 70 + "\n")
         
         # 对比显示（标记错误）
         f.write("对比结果 (✓=正确, ✗=错误):\n")
@@ -671,7 +695,7 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
 
             f.write(row_str + "\n")
         
-        f.write("\n" + "=" * 60 + "\n")
+        f.write("\n" + "=" * 70 + "\n")
         f.write("二维数组格式:\n")
         f.write("标准答案: \n")
         for row in standard_array:
@@ -680,7 +704,7 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
         for row in sudoku_array:
             f.write(str(row) + "\n")
         
-        f.write("\n" + "=" * 60 + "\n")
+        f.write("\n" + "=" * 70 + "\n")
         # 准确率统计信息
         f.write("准确率统计:\n")
         f.write(f"总体准确率: {accuracy_stats['correct_cells']}/{accuracy_stats['total_cells']} = {accuracy_stats['overall_accuracy']:.1f}%\n")
@@ -697,6 +721,7 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param):
     print(f"识别结果已保存到: {txt_filename}")
     return accuracy_stats
 
+
 def main():
     """主程序"""
     # 记录程序开始时间
@@ -708,58 +733,76 @@ def main():
     
     image_path = "image2.jpg"
     
-    # 要测试的阈值化参数数组（去掉参数9，加入参数13）
-    # threshold_params = [13, 15,17, 19]
-    threshold_params = [19]
+    # 固定阈值化参数
+    threshold_param = 19
     
-    print("开始使用不同阈值化参数识别数独图片...")
-    print(f"将测试参数: {threshold_params}")
+    # 固定卷积核大小为3
+    kernel_size = 3
+    
+    # 锐化对比: True表示使用锐化，False表示不使用锐化
+    sharpen_options = [True, False]
+    
+    print("开始对比锐化和不锐化的效果...")
+    print(f"阈值参数: {threshold_param}")
+    print(f"卷积核大小: {kernel_size}x{kernel_size}")
     print(f"标准答案: {res}")
     
-    # 用于保存所有参数的准确率统计
+    # 用于保存所有配置的准确率统计
     all_accuracy_stats = {}
     
-    for param in threshold_params:
-        print(f"\n正在处理参数 {param}...")
+    # 测试锐化和不锐化两种情况
+    for use_sharpen in sharpen_options:
+        sharpen_name = "锐化" if use_sharpen else "无锐化"
+        config_key = f"卷积核{kernel_size}_{sharpen_name}"
         
-        # 为每个参数创建单独的输出目录
-        output_dir = f"process_images_threshold_{param}"
+        print(f"\n正在处理配置: {config_key}")
+        print(f"  阈值参数: {threshold_param}")
+        print(f"  卷积核大小: {kernel_size}x{kernel_size}")
+        print(f"  锐化处理: {'是' if use_sharpen else '否'}")
+        
+        # 为每个配置创建单独的输出目录
+        output_dir = f"锐化对比_卷积核{kernel_size}_阈值{threshold_param}_{sharpen_name}"
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
         # 识别数独数字
-        result = recognize_sudoku_digits(image_path, param, output_dir)
+        result = recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir, use_sharpen)
         
         if result is not None:
             # 将识别结果保存到txt文件并获取准确率统计
-            accuracy_stats = save_sudoku_result_to_txt(result, output_dir, param)
-            all_accuracy_stats[param] = accuracy_stats
+            accuracy_stats = save_sudoku_result_to_txt(result, output_dir, threshold_param, kernel_size, use_sharpen)
+            all_accuracy_stats[config_key] = accuracy_stats
             
             # 在控制台显示详细结果
             total_recognized = sum(sum(1 for digit in row if digit != 0) for row in result)
-            print(f"参数 {param}:")
+            print(f"配置 {config_key}:")
             print(f"  总体准确率: {accuracy_stats['overall_accuracy']:.1f}%")
             print(f"  数字识别准确率: {accuracy_stats['filled_accuracy']:.1f}%")
             print(f"  空格识别准确率: {accuracy_stats['empty_accuracy']:.1f}%")
             print(f"  识别数字总数: {total_recognized}")
         else:
-            print(f"参数 {param}: 识别失败")
+            print(f"配置 {config_key}: 识别失败")
         
-        print(f"参数 {param} 处理完成，结果保存在 {output_dir} 文件夹中")
+        print(f"配置 {config_key} 处理完成，结果保存在 {output_dir} 文件夹中")
     
-    print(f"\n所有参数处理完成！")
-    print("\n准确率汇总:")
-    print("参数\t总体准确率\t数字准确率\t空格准确率")
-    print("-" * 50)
-    for param in threshold_params:
-        if param in all_accuracy_stats:
-            stats = all_accuracy_stats[param]
-            print(f"{param}\t{stats['overall_accuracy']:.1f}%\t\t{stats['filled_accuracy']:.1f}%\t\t{stats['empty_accuracy']:.1f}%")
+    print(f"\n锐化对比处理完成！")
+    print("\n准确率对比汇总:")
+    print("配置\t\t\t\t总体准确率\t数字准确率\t空格准确率")
+    print("-" * 70)
+    for use_sharpen in sharpen_options:
+        sharpen_name = "锐化" if use_sharpen else "无锐化"
+        config_key = f"卷积核{kernel_size}_{sharpen_name}"
+        if config_key in all_accuracy_stats:
+            stats = all_accuracy_stats[config_key]
+            print(f"{config_key}\t\t{stats['overall_accuracy']:.1f}%\t\t{stats['filled_accuracy']:.1f}%\t\t{stats['empty_accuracy']:.1f}%")
     
     print("\n你可以对比以下文件夹中的结果：")
-    for param in threshold_params:
-        print(f"- process_images_threshold_{param}")
-        print(f"  └── sudoku_result_threshold_{param}.txt")
+    for use_sharpen in sharpen_options:
+        sharpen_name = "锐化" if use_sharpen else "无锐化"
+        folder_name = f"锐化对比_卷积核{kernel_size}_阈值{threshold_param}_{sharpen_name}"
+        txt_name = f"数独识别结果_卷积核{kernel_size}_阈值{threshold_param}_{sharpen_name}.txt"
+        print(f"- {folder_name}")
+        print(f"  └── {txt_name}")
     
     # 记录程序结束时间并计算总耗时
     end_time = time.time()
