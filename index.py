@@ -5,7 +5,7 @@ import easyocr
 import os
 import time
 
-res='946157000128090705573280000734928000810760000690000078287040610469800057351670004'
+res='000004059059210000003509600092605003804900765065000000000000500500403002000050080'
 
 # 初始化EasyOCR读取器（只识别英文数字）
 reader = easyocr.Reader(['en', 'ch_sim'], gpu=True)  # 支持英文和简体中文识别
@@ -390,9 +390,14 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     min_required_width = resized_cell_width * 0.5   # 方格宽度的50%
                     min_required_height = resized_cell_height * 0.5  # 方格高度的50%
                     
-                    # 检查宽度和高度，只有两个都小于最小要求才过滤
-                    if digit_width < min_required_width and digit_height < min_required_height:
-                        filter_reason = f"宽度{digit_width}px和高度{digit_height}px都小于最小要求{min_required_width:.1f}px"
+                    # 修改条件：数字2-9且宽度或高度其中之一小于方格一半就过滤
+                    if digit >= 2 and digit <= 9 and (digit_width < min_required_width or digit_height < min_required_height):
+                        if digit_width < min_required_width and digit_height < min_required_height:
+                            filter_reason = f"数字{digit}的宽度{digit_width}px和高度{digit_height}px都小于最小要求{min_required_width:.1f}px"
+                        elif digit_width < min_required_width:
+                            filter_reason = f"数字{digit}的宽度{digit_width}px小于最小要求{min_required_width:.1f}px"
+                        else:
+                            filter_reason = f"数字{digit}的高度{digit_height}px小于最小要求{min_required_height:.1f}px"
                         
                         print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
                         digit = 0  # 将数字设为0（无数字）
@@ -731,7 +736,7 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image2.jpg"
+    image_path = "image.jpg"
     
     # 固定阈值化参数
     threshold_param = 19
