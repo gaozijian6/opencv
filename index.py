@@ -73,6 +73,11 @@ def calculate_accuracy(sudoku_array, standard_array):
 
 def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpen=True, blur_kernel_size=3):
     """预处理图像以提高OCR识别准确率"""
+    # 首先确保输出目录存在
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"创建输出目录: {output_dir}")
+    
     # 转换为灰度图
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -86,7 +91,13 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
                                   [ 0, -1,  0]], dtype=np.float32)
         sharpened = cv2.filter2D(blurred, -1, sharpen_kernel)
         processed_blur = sharpened
-        cv2.imwrite(os.path.join(output_dir, '2.3_sharpened.jpg'), sharpened)
+        # 检查锐化图像保存是否成功 - 修复文件名
+        sharpen_path = os.path.join(output_dir, '2_3_sharpened.jpg')
+        success = save_image_with_fallback(sharpened, sharpen_path)
+        if success:
+            print(f"✓ 锐化图像保存成功: {sharpen_path}")
+        else:
+            print(f"✗ 锐化图像保存失败: {sharpen_path}")
     else:
         processed_blur = blurred
     
@@ -111,19 +122,109 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
     kernel_clean = np.ones((kernel_size, kernel_size), np.uint8)
     processed = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_clean, iterations=1)
 
-    # 保存预处理结果到指定文件夹
-    cv2.imwrite(os.path.join(output_dir, '1_original_gray.jpg'), gray)
-    cv2.imwrite(os.path.join(output_dir, '2_gaussian_blur.jpg'), blurred)
-    cv2.imwrite(os.path.join(output_dir, '2.5_median_filtered.jpg'), median_filtered)
-    cv2.imwrite(os.path.join(output_dir, '3_adaptive_threshold.jpg'), thresh)
-    cv2.imwrite(os.path.join(output_dir, '3.5_after_opening.jpg'), opened)
-    cv2.imwrite(os.path.join(output_dir, '3.7_after_closing.jpg'), closed)
-    cv2.imwrite(os.path.join(output_dir, '4_final_processed.jpg'), processed)
+    # 保存预处理结果到指定文件夹，并检查每个保存操作是否成功
+    save_results = []
+    
+    images_to_save = [
+        ('1_original_gray.jpg', gray),
+        ('2_gaussian_blur.jpg', blurred),
+        ('2_5_median_filtered.jpg', median_filtered),
+        ('3_adaptive_threshold.jpg', thresh),
+        ('3_5_after_opening.jpg', opened),
+        ('3_7_after_closing.jpg', closed),
+        ('4_final_processed.jpg', processed)
+    ]
+    
+    for filename, img in images_to_save:
+        filepath = os.path.join(output_dir, filename)
+        
+        # 确保图像数据不为空
+        if img is None:
+            print(f"✗ {filename} 图像数据为空")
+            save_results.append((filename, False))
+            continue
+            
+        # 确保图像数据类型正确
+        if img.dtype != np.uint8:
+            img = img.astype(np.uint8)
+        
+        # 使用带有回退机制的保存函数
+        success = save_image_with_fallback(img, filepath)
+        save_results.append((filename, success))
+        
+        if success:
+            print(f"✓ {filename} 保存成功")
+        else:
+            print(f"✗ {filename} 保存失败: {filepath}")
+    
+    # 汇总保存结果
+    successful_saves = sum(1 for _, success in save_results if success)
+    total_saves = len(save_results)
     
     sharpen_status = "已添加锐化效果" if use_sharpen else "未使用锐化"
-    print(f"预处理图像已保存到 {output_dir} 文件夹 (threshold_param={threshold_param}, kernel_size={kernel_size}x{kernel_size}, blur_kernel={blur_kernel_size}x{blur_kernel_size}, {sharpen_status})")
+    print(f"预处理图像保存结果: {successful_saves}/{total_saves} 成功")
+    print(f"保存位置: {output_dir}")
+    print(f"参数: threshold_param={threshold_param}, kernel_size={kernel_size}x{kernel_size}, blur_kernel={blur_kernel_size}x{blur_kernel_size}, {sharpen_status}")
     
     return processed
+
+
+def save_image_with_fallback(image, filepath):
+    """使用多种方法尝试保存图像，处理中文路径问题"""
+    # 方法1: 直接使用cv2.imwrite
+    try:
+        success = cv2.imwrite(filepath, image)
+        if success and os.path.exists(filepath):
+            return True
+    except Exception as e:
+        print(f"方法1保存失败: {e}")
+    
+    # 方法2: 使用cv2.imencode然后写入文件 (处理中文路径)
+    try:
+        # 获取文件扩展名
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext not in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']:
+            ext = '.jpg'
+        
+        # 编码图像
+        success, encoded_image = cv2.imencode(ext, image)
+        if success:
+            # 写入文件
+            with open(filepath, 'wb') as f:
+                f.write(encoded_image.tobytes())
+            
+            # 验证文件是否存在且不为空
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                return True
+    except Exception as e:
+        print(f"方法2保存失败: {e}")
+    
+    # 方法3: 尝试使用临时文件名，然后重命名
+    try:
+        import tempfile
+        temp_dir = os.path.dirname(filepath)
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg', dir=temp_dir)
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        # 保存到临时文件
+        success = cv2.imwrite(temp_path, image)
+        if success and os.path.exists(temp_path):
+            # 移动到目标位置
+            import shutil
+            shutil.move(temp_path, filepath)
+            
+            if os.path.exists(filepath):
+                return True
+        
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+            
+    except Exception as e:
+        print(f"方法3保存失败: {e}")
+    
+    return False
 
 
 def find_sudoku_grid(image, output_dir):
@@ -141,14 +242,14 @@ def find_sudoku_grid(image, output_dir):
     # 保存轮廓检测结果
     contour_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(contour_image, [largest_contour], -1, (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(output_dir, '5_largest_contour.jpg'), contour_image)
+    save_image_with_fallback(contour_image, os.path.join(output_dir, '5_largest_contour.jpg'))
 
     # 如果找到了四边形，返回其坐标
     if len(approx) == 4:
         # 保存四边形轮廓
         quad_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         cv2.drawContours(quad_image, [approx], -1, (0, 0, 255), 3)
-        cv2.imwrite(os.path.join(output_dir, '6_sudoku_grid_quad.jpg'), quad_image)
+        save_image_with_fallback(quad_image, os.path.join(output_dir, '6_sudoku_grid_quad.jpg'))
         print("找到四边形数独网格")
         return approx.reshape(4, 2)
     else:
@@ -156,7 +257,7 @@ def find_sudoku_grid(image, output_dir):
         x, y, w, h = cv2.boundingRect(largest_contour)
         rect_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         cv2.rectangle(rect_image, (x, y), (x + w, y + h), (255, 0, 0), 3)
-        cv2.imwrite(os.path.join(output_dir, '6_sudoku_grid_rectangle.jpg'), rect_image)
+        save_image_with_fallback(rect_image, os.path.join(output_dir, '6_sudoku_grid_rectangle.jpg'))
         print("使用矩形边界作为数独网格")
         return np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
 
@@ -282,7 +383,7 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     grid_roi = image[y:y+h, x:x+w]
     
     # 保存裁剪的网格区域
-    cv2.imwrite(os.path.join(output_dir, '7_grid_roi.jpg'), grid_roi)
+    save_image_with_fallback(grid_roi, os.path.join(output_dir, '7_grid_roi.jpg'))
     print("网格区域裁剪完成")
 
     # 在裁剪后的图像上绘制网格线，便于观察
@@ -307,7 +408,7 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
         # 绘制水平线
         cv2.line(grid_with_lines, (0, int(i * cell_height)), (w, int(i * cell_height)), (0, 255, 0), 1)
     
-    cv2.imwrite(os.path.join(output_dir, '8_grid_with_lines.jpg'), grid_with_lines)
+    save_image_with_fallback(grid_with_lines, os.path.join(output_dir, '8_grid_with_lines.jpg'))
     print("网格线图像已保存")
 
     # 初始化9x9数组
@@ -318,11 +419,6 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     # 计算单元格尺寸
     cell_width = w / 9
     cell_height = h / 9
-    
-    # 创建单元格处理步骤的保存目录
-    cells_dir = os.path.join(output_dir, 'cells_processing_steps')
-    if not os.path.exists(cells_dir):
-        os.makedirs(cells_dir)
 
     print("开始识别每个单元格的数字...")
     for row in range(9):
@@ -356,20 +452,11 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
 
             # 进一步处理单元格
             if cell.size > 0 and cell_w > 0 and cell_h > 0:
-                # 保存原始截取的单元格
-                cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_01_original.jpg'), cell)
-                
                 # 对单元格进行额外的预处理 - 传入kernel_size、锐化参数和模糊核大小
                 cell_cleaned = preprocess_cell(cell, kernel_size, use_sharpen, blur_kernel_size)
                 
-                # 保存预处理后的单元格
-                cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_02_cleaned.jpg'), cell_cleaned)
-                
                 # 调整大小以提高OCR准确性
                 cell_resized = cv2.resize(cell_cleaned, (84, 84))
-                
-                # 保存最终喂给OCR的单元格（这是实际识别的图像）
-                cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_03_final_for_ocr.jpg'), cell_resized)
 
                 # 使用改进的识别函数获取数字和位置信息
                 result_info = recognize_digit_with_position_info(cell_resized)
@@ -428,58 +515,6 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 if result_info.get('filtered_reason'):
                     print(f"方格({row},{col}) {result_info['filtered_reason']}，过滤掉")
                     filtered_count += 1
-                
-                # 如果识别到了数字，在最终OCR图像上标注识别结果
-                if digit > 0:
-                    # 创建一个带标注的版本
-                    cell_annotated = cv2.cvtColor(cell_resized, cv2.COLOR_GRAY2BGR) if len(cell_resized.shape) == 2 else cell_resized.copy()
-                    
-                    # 如果有位置信息，画出识别区域
-                    if result_info['position']:
-                        x_min, y_min, x_max, y_max = result_info['position']
-                        cv2.rectangle(cell_annotated, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-                        cv2.putText(cell_annotated, f"Digit: {digit}", (5, 15), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                        cv2.putText(cell_annotated, f"Conf: {result_info['confidence']:.2f}", (5, 30), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-                    
-                    cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_04_annotated_result.jpg'), cell_annotated)
-                elif result_info.get('filtered_reason'):
-                    # 为被多数字过滤的方格也创建标注图像
-                    cell_annotated = cv2.cvtColor(cell_resized, cv2.COLOR_GRAY2BGR) if len(cell_resized.shape) == 2 else cell_resized.copy()
-                    
-                    if result_info['position']:
-                        x_min, y_min, x_max, y_max = result_info['position']
-                        cv2.rectangle(cell_annotated, (x_min, y_min), (x_max, y_max), (0, 165, 255), 2)  # 橙色框
-                        cv2.putText(cell_annotated, "Multi-digits", (5, 15), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
-                        cv2.putText(cell_annotated, "FILTERED", (5, 30), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
-                    
-                    cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_04_annotated_result.jpg'), cell_annotated)
-                
-                # 同时保存一个对比图，显示边距效果
-                if row < 3 and col < 3:  # 只为前几个单元格创建对比图
-                    # 创建一个显示裁剪区域的图像
-                    crop_demo = grid_roi.copy()
-                    if len(crop_demo.shape) == 2:
-                        crop_demo = cv2.cvtColor(crop_demo, cv2.COLOR_GRAY2BGR)
-                    
-                    # 绘制原始网格线，转换为整数
-                    orig_x = int(col * cell_width)
-                    orig_y = int(row * cell_height)
-                    orig_w = int(cell_width)
-                    orig_h = int(cell_height)
-                    cv2.rectangle(crop_demo, (orig_x, orig_y), (orig_x + orig_w, orig_y + orig_h), (255, 0, 0), 2)  # 蓝色：原始网格
-                    
-                    # 绘制实际裁剪区域
-                    cv2.rectangle(crop_demo, (cell_x, cell_y), (cell_x + cell_w, cell_y + cell_h), (0, 255, 0), 2)  # 绿色：实际裁剪区域
-                    
-                    # 添加文字说明
-                    cv2.putText(crop_demo, "Blue: Grid", (orig_x, orig_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
-                    cv2.putText(crop_demo, "Green: Crop", (cell_x, cell_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-                    
-                    cv2.imwrite(os.path.join(cells_dir, f'cell_{row}_{col}_00_crop_area_demo.jpg'), crop_demo)
                 
                 sudoku_row.append(digit)
                 
@@ -556,11 +591,11 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, font_thickness)
 
     # 保存带有数字边界框的图像
-    cv2.imwrite(os.path.join(output_dir, '9_grid_with_digit_boxes.jpg'), grid_with_digit_boxes)
+    save_image_with_fallback(grid_with_digit_boxes, os.path.join(output_dir, '9_grid_with_digit_boxes.jpg'))
     print(f"数字边界框图像已保存到 {os.path.join(output_dir, '9_grid_with_digit_boxes.jpg')}")
     
     # 保存带有蓝色单元格边界的二值图像
-    cv2.imwrite(os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg'), processed_with_cells)
+    save_image_with_fallback(processed_with_cells, os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg'))
     print(f"带单元格边界的二值图像已保存到 {os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg')}")
     
     # 打印识别到的数字位置统计
@@ -569,7 +604,6 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     
     print(f"识别到 {len(recognized_digits)} 个数字，检测到 {len(detected_content)} 个未识别内容")
     print(f"因尺寸条件过滤掉 {filtered_count} 个可能的误识别")
-    print(f"所有单元格的处理步骤图像已保存到: {cells_dir}")
     
     return sudoku_array
 
@@ -606,7 +640,7 @@ def recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir
         return None
 
     # 保存原始图像
-    cv2.imwrite(os.path.join(output_dir, '0_original_sudoku_image.jpg'), image)
+    save_image_with_fallback(image, os.path.join(output_dir, '0_original_sudoku_image.jpg'))
     print(f"原始图像已保存到 {output_dir}")
 
     # 预处理图像
@@ -736,7 +770,7 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image.jpg"
+    image_path = "image2.jpg"
     
     # 固定阈值化参数
     threshold_param = 19
