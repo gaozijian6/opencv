@@ -109,18 +109,8 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
         median_filtered, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, threshold_param, 2
     )
 
-    # 多步形态学操作去除噪声 - 使用传入的kernel大小
-    # 第一步：开运算去除小的白色噪点
-    kernel_open = np.ones((kernel_size, kernel_size), np.uint8)
-    opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open, iterations=1)
-    
-    # 第二步：闭运算填充数字内部的小孔
-    kernel_close = np.ones((kernel_size, kernel_size), np.uint8)
-    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close, iterations=1)
-    
-    # 第三步：再次开运算进一步清理噪点
-    kernel_clean = np.ones((kernel_size, kernel_size), np.uint8)
-    processed = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_clean, iterations=1)
+    # 直接使用阈值化后的图像作为最终处理结果
+    processed = thresh
 
     # 保存预处理结果到指定文件夹，并检查每个保存操作是否成功
     save_results = []
@@ -130,8 +120,6 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
         ('2_gaussian_blur.jpg', blurred),
         ('2_5_median_filtered.jpg', median_filtered),
         ('3_adaptive_threshold.jpg', thresh),
-        ('3_5_after_opening.jpg', opened),
-        ('3_7_after_closing.jpg', closed),
         ('4_final_processed.jpg', processed)
     ]
     
@@ -623,11 +611,8 @@ def preprocess_cell(cell, kernel_size, use_sharpen=True, blur_kernel_size=3):
     else:
         processed_blur = blurred
     
-    # 形态学操作去除噪点 - 使用传入的kernel大小
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    opened = cv2.morphologyEx(processed_blur, cv2.MORPH_OPEN, kernel)
-    
-    return opened
+    # 直接返回处理后的图像，不进行形态学操作
+    return processed_blur
 
 
 def recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir, use_sharpen=True, blur_kernel_size=3):
@@ -770,7 +755,7 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image2.jpg"
+    image_path = "image.jpg"
     
     # 固定阈值化参数
     threshold_param = 19
