@@ -5,7 +5,7 @@ import easyocr
 import os
 import time
 
-res='000004059059210000003509600092605003804900765065000000000000500500403002000050080'
+res='546001200000600004009240610060000027070000060390000040020079406607402000904300002'
 
 # 初始化EasyOCR读取器（只识别英文数字）
 reader = easyocr.Reader(['en', 'ch_sim'], gpu=True)  # 支持英文和简体中文识别
@@ -509,6 +509,51 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                         digit = 0
                         filtered_count += 1
                 
+                # 新增：高宽比检查
+                if result_info['found'] and result_info['position'] and digit > 0:
+                    x_min, y_min, x_max, y_max = result_info['position']
+                    digit_width = x_max - x_min
+                    digit_height = y_max - y_min
+                    
+                    # 计算高宽比
+                    if digit_width > 0:  # 避免除零错误
+                        aspect_ratio = digit_height / digit_width
+                        
+                        # 如果数字是2-9且高宽比不在1-2之间，则过滤掉
+                        if digit >= 2 and digit <= 9 and (aspect_ratio < 1.0 or aspect_ratio > 2.0):
+                            filter_type = "aspect_ratio"
+                            filter_reason = f"数字{digit}的高宽比{aspect_ratio:.2f}不在1-2范围内(高{digit_height}px,宽{digit_width}px)"
+                            print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                            digit = 0
+                            filtered_count += 1
+                
+                # 新增：中心距离比例检查
+                if result_info['found'] and result_info['position'] and digit > 0:
+                    x_min, y_min, x_max, y_max = result_info['position']
+                    
+                    # 在84x84的图像中，中心位置是42
+                    center_x = 42
+                    
+                    # 计算左边界到中心的距离和右边界到中心的距离
+                    distance1 = abs(x_min - center_x)  # 左边界到中心的距离
+                    distance2 = abs(x_max - center_x)  # 右边界到中心的距离
+                    
+                    # 找出最小和最大距离
+                    min_distance = min(distance1, distance2)
+                    max_distance = max(distance1, distance2)
+                    
+                    # 如果最小距离不为0，计算比例
+                    if min_distance > 0:
+                        distance_ratio = max_distance / min_distance
+                        
+                        # 如果比例超过2就过滤掉
+                        if distance_ratio > 2.0:
+                            filter_type = "center_distance"
+                            filter_reason = f"数字{digit}的中心距离比例{distance_ratio:.2f}超过2(左距离{distance1}px,右距离{distance2}px)"
+                            print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                            digit = 0
+                            filtered_count += 1
+                
                 # 新增：显示多数字过滤信息
                 if result_info.get('filtered_reason'):
                     filter_type = "multi_digit"
@@ -616,6 +661,10 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 description = "位置偏左(右上角在中间左边)"
             elif filter_type == "multi_digit":
                 description = "识别到多个数字"
+            elif filter_type == "aspect_ratio":
+                description = "高宽比不在1-2范围内"
+            elif filter_type == "center_distance":
+                description = "中心距离比例超过2"
             else:
                 description = filter_type
             print(f"  {letter}: {description}")
@@ -852,7 +901,7 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image2.jpg"
+    image_path = "image7.jpg"
     
     # 固定阈值化参数
     threshold_param = 19
@@ -864,7 +913,7 @@ def main():
     use_sharpen = False
     
     # 测试不同的模糊核大小 - 去掉1，加入11和13
-    blur_kernel_sizes = [3, 5, 7, 9, 11, 13]
+    blur_kernel_sizes = [7, 9, 11, 13,15,17,19]
     # blur_kernel_sizes = [13]
     
     print("开始对比不同模糊核大小的效果...")
