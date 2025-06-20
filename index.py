@@ -72,7 +72,7 @@ def calculate_accuracy(sudoku_array, standard_array):
     }
 
 def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpen=True, blur_kernel_size=3):
-    """预处理图像以提高OCR识别准确率"""
+    """预处理图像以提高OCR识别准确率 - 不对整体图片进行高斯模糊"""
     # 首先确保输出目录存在
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -81,16 +81,16 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
     # 转换为灰度图
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # 高斯模糊 - 使用可调节的模糊核大小
-    blurred = cv2.GaussianBlur(gray, (blur_kernel_size, blur_kernel_size), 0)
+    # 移除整体高斯模糊，直接使用灰度图进行后续处理
+    processed_image = gray
     
-    # 根据参数决定是否添加锐化效果
+    # 根据参数决定是否添加锐化效果（如果启用的话）
     if use_sharpen:
         sharpen_kernel = np.array([[ 0, -1,  0],
                                   [-1,  5, -1],
                                   [ 0, -1,  0]], dtype=np.float32)
-        sharpened = cv2.filter2D(blurred, -1, sharpen_kernel)
-        processed_blur = sharpened
+        sharpened = cv2.filter2D(processed_image, -1, sharpen_kernel)
+        processed_image = sharpened
         # 检查锐化图像保存是否成功 - 修复文件名
         sharpen_path = os.path.join(output_dir, '2_3_sharpened.jpg')
         success = save_image_with_fallback(sharpened, sharpen_path)
@@ -98,11 +98,9 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
             print(f"✓ 锐化图像保存成功: {sharpen_path}")
         else:
             print(f"✗ 锐化图像保存失败: {sharpen_path}")
-    else:
-        processed_blur = blurred
     
     # 中值滤波，去除椒盐噪声
-    median_filtered = cv2.medianBlur(processed_blur, 3)
+    median_filtered = cv2.medianBlur(processed_image, 3)
 
     # 自适应阈值化 - 使用传入的参数
     thresh = cv2.adaptiveThreshold(
@@ -115,9 +113,10 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
     # 保存预处理结果到指定文件夹，并检查每个保存操作是否成功
     save_results = []
     
+    # 更新保存的图像列表，移除高斯模糊图像，改为保存直接处理的图像
     images_to_save = [
         ('1_original_gray.jpg', gray),
-        ('2_gaussian_blur.jpg', blurred),
+        ('2_no_blur_processed.jpg', processed_image),  # 无模糊的处理图像
         ('2_5_median_filtered.jpg', median_filtered),
         ('3_adaptive_threshold.jpg', thresh),
         ('4_final_processed.jpg', processed)
@@ -152,7 +151,7 @@ def preprocess_image(image, threshold_param, kernel_size, output_dir, use_sharpe
     sharpen_status = "已添加锐化效果" if use_sharpen else "未使用锐化"
     print(f"预处理图像保存结果: {successful_saves}/{total_saves} 成功")
     print(f"保存位置: {output_dir}")
-    print(f"参数: threshold_param={threshold_param}, kernel_size={kernel_size}x{kernel_size}, blur_kernel={blur_kernel_size}x{blur_kernel_size}, {sharpen_status}")
+    print(f"参数: threshold_param={threshold_param}, kernel_size={kernel_size}x{kernel_size}, 整体模糊: 已移除, 方格模糊={blur_kernel_size}x{blur_kernel_size}, {sharpen_status}")
     
     return processed
 
@@ -403,6 +402,11 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     sudoku_array = []
     digit_positions = []  # 存储数字位置信息
     filtered_count = 0    # 记录被尺寸条件过滤掉的数字数量
+    
+    # 定义过滤原因映射
+    filter_reason_map = {}  # key: 过滤原因类型, value: 字母
+    filter_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p']
+    next_letter_index = 0
 
     # 计算单元格尺寸
     cell_width = w / 9
@@ -450,10 +454,11 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 result_info = recognize_digit_with_position_info(cell_resized)
                 
                 digit = result_info['digit']
+                filter_type = None  # 记录过滤类型
+                filter_reason = ""
                 
                 # 新增：宽度和高度条件检查
                 size_check_passed = True
-                filter_reason = ""
                 if result_info['found'] and result_info['position'] and digit > 0:
                     x_min, y_min, x_max, y_max = result_info['position']
                     digit_width = x_max - x_min
@@ -462,16 +467,19 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     # 在调整后的84x84图像中，方格的有效宽度和高度都是84
                     resized_cell_width = 84
                     resized_cell_height = 84
-                    min_required_width = resized_cell_width * 0.5   # 方格宽度的50%
+                    min_required_width = resized_cell_width * 0.4   # 方格宽度的50%
                     min_required_height = resized_cell_height * 0.5  # 方格高度的50%
                     
                     # 修改条件：数字2-9且宽度或高度其中之一小于方格一半就过滤
                     if digit >= 2 and digit <= 9 and (digit_width < min_required_width or digit_height < min_required_height):
                         if digit_width < min_required_width and digit_height < min_required_height:
+                            filter_type = "size_both"
                             filter_reason = f"数字{digit}的宽度{digit_width}px和高度{digit_height}px都小于最小要求{min_required_width:.1f}px"
                         elif digit_width < min_required_width:
+                            filter_type = "size_width"
                             filter_reason = f"数字{digit}的宽度{digit_width}px小于最小要求{min_required_width:.1f}px"
                         else:
+                            filter_type = "size_height"
                             filter_reason = f"数字{digit}的高度{digit_height}px小于最小要求{min_required_height:.1f}px"
                         
                         print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
@@ -488,12 +496,14 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     
                     # 检查左上角是否在中间位置右边
                     if x_min > center_x:
+                        filter_type = "position_left"
                         filter_reason = f"左上角位置({x_min})在方格中间({center_x})右边"
                         print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
                         digit = 0
                         filtered_count += 1
                     # 检查右上角是否在中间位置左边
                     elif x_max < center_x:
+                        filter_type = "position_right"
                         filter_reason = f"右上角位置({x_max})在方格中间({center_x})左边"
                         print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
                         digit = 0
@@ -501,12 +511,22 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 
                 # 新增：显示多数字过滤信息
                 if result_info.get('filtered_reason'):
-                    print(f"方格({row},{col}) {result_info['filtered_reason']}，过滤掉")
+                    filter_type = "multi_digit"
+                    filter_reason = result_info.get('filtered_reason')
+                    print(f"方格({row},{col}) {filter_reason}，过滤掉")
                     filtered_count += 1
+                
+                # 为过滤类型分配字母
+                if filter_type and filter_type not in filter_reason_map:
+                    if next_letter_index < len(filter_letters):
+                        filter_reason_map[filter_type] = filter_letters[next_letter_index]
+                        next_letter_index += 1
+                    else:
+                        filter_reason_map[filter_type] = '?'  # 如果字母用完了，用?代替
                 
                 sudoku_row.append(digit)
                 
-                # 如果找到了数字且通过尺寸检查，记录位置信息
+                # 如果找到了数字，记录位置信息
                 if result_info['found'] and result_info['position']:
                     # 将相对于调整后单元格的坐标转换为相对于原始网格的坐标
                     x_min, y_min, x_max, y_max = result_info['position']
@@ -523,11 +543,12 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     digit_positions.append({
                         'row': row,
                         'col': col,
-                        'digit': digit,  # 这里的digit已经是经过尺寸检查后的结果
+                        'digit': digit,  # 这里的digit已经是经过过滤后的结果
                         'bbox': (actual_x_min, actual_y_min, actual_x_max, actual_y_max),
                         'confidence': result_info['confidence'],
-                        'size_filtered': not size_check_passed,  # 标记是否被尺寸条件过滤
-                        'filter_reason': filter_reason if not size_check_passed else ""
+                        'filtered': filter_type is not None,  # 标记是否被过滤
+                        'filter_type': filter_type,
+                        'filter_reason': filter_reason
                     })
             else:
                 sudoku_row.append(0)
@@ -540,38 +561,35 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
         x_min, y_min, x_max, y_max = pos_info['bbox']
         digit = pos_info['digit']
         confidence = pos_info['confidence']
-        size_filtered = pos_info.get('size_filtered', False)
+        filtered = pos_info.get('filtered', False)
+        filter_type = pos_info.get('filter_type', None)
         
         # 根据识别结果选择颜色
         if digit > 0:
             # 识别到数字用红色框
             color = (0, 0, 255)  # 红色
             thickness = 2
-        elif size_filtered:
-            # 被尺寸条件过滤的用橙色框
+            label = f"{digit}"
+        elif filtered:
+            # 被过滤的用橙色框
             color = (0, 165, 255)  # 橙色
             thickness = 1
+            # 使用对应的字母标记
+            label = filter_reason_map.get(filter_type, "?")
         else:
             # 检测到内容但未识别出数字用黄色框
             color = (0, 255, 255)  # 黄色
             thickness = 1
+            label = "?"  # ?表示检测到内容但未识别
         
         # 绘制边界框
         cv2.rectangle(grid_with_digit_boxes, (x_min, y_min), (x_max, y_max), color, thickness)
         
-        # 在框旁边添加数字标签（如果识别到了数字）
-        if digit > 0:
-            label = f"{digit}"
-        elif size_filtered:
-            label = "S"  # S表示被尺寸条件过滤（Size filtered）
-        else:
-            label = "?"  # ?表示检测到内容但未识别
-            
         font_scale = 0.5
         font_thickness = 1
         text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)[0]
         
-        # 在边界框上方显示标签
+        # 在边界框左上角显示标签
         text_x = x_min
         text_y = y_min - 5 if y_min - 5 > 0 else y_max + 15
         
@@ -582,6 +600,85 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     save_image_with_fallback(grid_with_digit_boxes, os.path.join(output_dir, '9_grid_with_digit_boxes.jpg'))
     print(f"数字边界框图像已保存到 {os.path.join(output_dir, '9_grid_with_digit_boxes.jpg')}")
     
+    # 打印过滤原因映射表
+    if filter_reason_map:
+        print("\n过滤原因映射表:")
+        for filter_type, letter in filter_reason_map.items():
+            if filter_type == "size_both":
+                description = "宽度和高度都小于要求"
+            elif filter_type == "size_width":
+                description = "宽度小于要求"
+            elif filter_type == "size_height":
+                description = "高度小于要求"
+            elif filter_type == "position_left":
+                description = "位置偏右(左上角在中间右边)"
+            elif filter_type == "position_right":
+                description = "位置偏左(右上角在中间左边)"
+            elif filter_type == "multi_digit":
+                description = "识别到多个数字"
+            else:
+                description = filter_type
+            print(f"  {letter}: {description}")
+    
+    # 创建高斯模糊后的整体图像
+    print("正在创建高斯模糊后的整体图像...")
+    blurred_grid = grid_roi.copy()  # 复制原始网格区域
+    
+    # 遍历每个方格，应用高斯模糊并放回原位置
+    for row in range(9):
+        for col in range(9):
+            # 计算方格坐标（与上面识别时使用的相同逻辑）
+            margin_x = int(cell_width * 0.08)
+            margin_y = int(cell_height * 0.08)
+            
+            cell_x = int(col * cell_width + margin_x)
+            cell_y = int(row * cell_height + margin_y)
+            cell_w = int(cell_width - 2 * margin_x)
+            cell_h = int(cell_height - 2 * margin_y)
+
+            # 确保不会越界
+            cell_x = max(0, cell_x)
+            cell_y = max(0, cell_y)
+            cell_w = min(cell_w, w - cell_x)
+            cell_h = min(cell_h, h - cell_y)
+
+            # 提取单元格
+            cell = grid_roi[cell_y:cell_y + cell_h, cell_x:cell_x + cell_w]
+
+            # 对单元格应用高斯模糊处理
+            if cell.size > 0 and cell_w > 0 and cell_h > 0:
+                # 使用与OCR识别相同的预处理方法
+                cell_blurred = preprocess_cell(cell, kernel_size, use_sharpen, blur_kernel_size)
+                
+                # 将模糊后的方格放回原位置
+                blurred_grid[cell_y:cell_y + cell_h, cell_x:cell_x + cell_w] = cell_blurred
+
+    # 保存高斯模糊后的整体图像
+    blurred_image_path = os.path.join(output_dir, '11_blurred_grid_composite.jpg')
+    success = save_image_with_fallback(blurred_grid, blurred_image_path)
+    if success:
+        print(f"✓ 高斯模糊整体图像已保存到: {blurred_image_path}")
+    else:
+        print(f"✗ 高斯模糊整体图像保存失败: {blurred_image_path}")
+    
+    # 可选：同时创建一个彩色版本的高斯模糊图像（用于更好的可视化）
+    if len(blurred_grid.shape) == 2:  # 如果是灰度图
+        blurred_grid_color = cv2.cvtColor(blurred_grid, cv2.COLOR_GRAY2BGR)
+        
+        # 在彩色版本上绘制网格线以便查看方格边界
+        for i in range(10):  # 绘制10条线（0到9）
+            # 绘制垂直线
+            cv2.line(blurred_grid_color, (int(i * cell_width), 0), (int(i * cell_width), h), (0, 255, 0), 1)
+            # 绘制水平线
+            cv2.line(blurred_grid_color, (0, int(i * cell_height)), (w, int(i * cell_height)), (0, 255, 0), 1)
+        
+        blurred_color_path = os.path.join(output_dir, '12_blurred_grid_with_lines.jpg')
+        success_color = save_image_with_fallback(blurred_grid_color, blurred_color_path)
+        if success_color:
+            print(f"✓ 带网格线的高斯模糊图像已保存到: {blurred_color_path}")
+        else:
+            print(f"✗ 带网格线的高斯模糊图像保存失败: {blurred_color_path}")
+
     # 保存带有蓝色单元格边界的二值图像
     save_image_with_fallback(processed_with_cells, os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg'))
     print(f"带单元格边界的二值图像已保存到 {os.path.join(output_dir, '10_processed_with_cell_boundaries.jpg')}")
@@ -755,7 +852,7 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image.jpg"
+    image_path = "image2.jpg"
     
     # 固定阈值化参数
     threshold_param = 19
@@ -768,6 +865,7 @@ def main():
     
     # 测试不同的模糊核大小 - 去掉1，加入11和13
     blur_kernel_sizes = [3, 5, 7, 9, 11, 13]
+    # blur_kernel_sizes = [13]
     
     print("开始对比不同模糊核大小的效果...")
     print(f"阈值参数: {threshold_param}")
