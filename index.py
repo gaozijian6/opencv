@@ -5,7 +5,26 @@ import easyocr
 import os
 import time
 
-res='546001200000600004009240610060000027070000060390000040020079406607402000904300002'
+test={
+    'image13.jpg':'964000000802954360530600294429817536706005029350269040190000603203596400640103902',
+    'image12.jpg':'214087005307002008806000007589726431721493856463518972130070084940801703678234519',
+    'image11.jpg':'005000062063009105000000004000006703006705008100800006801200640600000530040000820',
+    'image9.jpg':'410090362020134090903600401090010040084070910031940280300401629040069130169003004',
+    'image7.jpg':'546001200000600004009240610060000027070000060390000040020079406607402000904300002',
+    'image5.jpg':'410090362020134000903600401090010040084070910031940280300401629040069130169003004',
+    'image4.jpg':'083600000000070048074080000067108000000000027000307081402850000700000800000700100',
+    'image3.jpg':'000030508203000064085040273000027080307080602820400000564010820932000051008050006',
+    'image1.jpg':'000004059059210000003509600092605003804900765065000000000000500500403002000050080',
+    'image.jpg':'000030508203000064085040273000027080307080602820400000564010820932000051008050006',
+    'image14.jpg':'250600070800010000000000000070000001000032000000000000000007240010900000300000800'
+}
+
+image_path = "image15.jpg"
+res='560782103318500072270003805832075019941028507657001208728006984496857321183200756'
+
+isForce=0
+blur_kernel_size=5
+
 
 # 初始化EasyOCR读取器（只识别英文数字）
 reader = easyocr.Reader(['en', 'ch_sim'], gpu=True)  # 支持英文和简体中文识别
@@ -361,10 +380,27 @@ def recognize_digit_with_position_info(cell_image):
         }
 
 
+def get_blur_kernel_size_by_width(grid_width):
+    """根据网格宽度动态选择模糊核大小"""
+    if isForce:
+        return blur_kernel_size
+    if grid_width < 500:
+        return 7
+    elif grid_width >= 500 and grid_width < 750:
+        return 11
+    elif grid_width >= 750 and grid_width < 1000:
+        return 15
+    else:  # >= 1000
+        return 19
+
 def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_sharpen=True, blur_kernel_size=3):
     """从数独网格中提取每个单元格的数字（不使用透视变换）"""
     # 获取网格的边界矩形
     x, y, w, h = cv2.boundingRect(grid_corners)
+    
+    # 根据网格宽度动态设置模糊核大小
+    dynamic_blur_kernel_size = get_blur_kernel_size_by_width(w)
+    print(f"检测到网格宽度: {w}px，自动选择模糊核大小: {dynamic_blur_kernel_size}x{dynamic_blur_kernel_size}")
     
     # 直接从原始图像中裁剪网格区域
     grid_roi = image[y:y+h, x:x+w]
@@ -444,8 +480,8 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
 
             # 进一步处理单元格
             if cell.size > 0 and cell_w > 0 and cell_h > 0:
-                # 对单元格进行额外的预处理 - 传入kernel_size、锐化参数和模糊核大小
-                cell_cleaned = preprocess_cell(cell, kernel_size, use_sharpen, blur_kernel_size)
+                # 对单元格进行额外的预处理 - 使用动态模糊核大小
+                cell_cleaned = preprocess_cell(cell, kernel_size, use_sharpen, dynamic_blur_kernel_size)
                 
                 # 调整大小以提高OCR准确性
                 cell_resized = cv2.resize(cell_cleaned, (84, 84))
@@ -453,9 +489,47 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 # 使用改进的识别函数获取数字和位置信息
                 result_info = recognize_digit_with_position_info(cell_resized)
                 
+                original_digit = result_info['digit']  # 保存原始识别结果
                 digit = result_info['digit']
                 filter_type = None  # 记录过滤类型
                 filter_reason = ""
+                
+                # 新增：打印每个识别出的数字的位置和边距比例信息（在过滤之前）
+                if result_info['found'] and result_info['position'] and original_digit > 0:
+                    x_min, y_min, x_max, y_max = result_info['position']
+                    
+                    # 计算边距
+                    distance1 = x_min  # 左边框到方格左边的距离
+                    distance2 = 84 - x_max  # 右边框到方格右边框的距离
+                    
+                    # 计算边距比例，处理除零情况
+                    min_distance = min(distance1, distance2)
+                    max_distance = max(distance1, distance2)
+                    if min_distance == 0:
+                        margin_ratio_text = "min=0"
+                    else:
+                        margin_ratio = max_distance / min_distance
+                        margin_ratio_text = f"{margin_ratio:.2f}"
+                    
+                    # 计算中心距离比例
+                    center_x = 42
+                    center_distance1 = abs(x_min - center_x)
+                    center_distance2 = abs(x_max - center_x)
+                    min_center_distance = min(center_distance1, center_distance2)
+                    max_center_distance = max(center_distance1, center_distance2)
+                    if min_center_distance == 0:
+                        center_ratio_text = "min=0"
+                    else:
+                        center_ratio = max_center_distance / min_center_distance
+                        center_ratio_text = f"{center_ratio:.2f}"
+                    
+                    # 计算数字尺寸
+                    digit_width = x_max - x_min
+                    digit_height = y_max - y_min
+                    
+                    print(f"方格({row},{col}) 识别到数字{original_digit}: 位置({x_min},{y_min})-({x_max},{y_max}) "
+                          f"尺寸{digit_width}x{digit_height} 左边距{distance1}px 右边距{distance2}px "
+                          f"边距比例{margin_ratio_text} 中心比例{center_ratio_text} 置信度{result_info['confidence']:.2f}")
                 
                 # 新增：宽度和高度条件检查
                 size_check_passed = True
@@ -467,7 +541,7 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     # 在调整后的84x84图像中，方格的有效宽度和高度都是84
                     resized_cell_width = 84
                     resized_cell_height = 84
-                    min_required_width = resized_cell_width * 0.4   # 方格宽度的50%
+                    min_required_width = resized_cell_width * 0.4   # 方格宽度的40%
                     min_required_height = resized_cell_height * 0.5  # 方格高度的50%
                     
                     # 修改条件：数字2-9且宽度或高度其中之一小于方格一半就过滤
@@ -482,7 +556,7 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                             filter_type = "size_height"
                             filter_reason = f"数字{digit}的高度{digit_height}px小于最小要求{min_required_height:.1f}px"
                         
-                        print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                        print(f"  → 过滤原因: {filter_reason}")
                         digit = 0  # 将数字设为0（无数字）
                         size_check_passed = False
                         filtered_count += 1
@@ -498,14 +572,14 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     if x_min > center_x:
                         filter_type = "position_left"
                         filter_reason = f"左上角位置({x_min})在方格中间({center_x})右边"
-                        print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                        print(f"  → 过滤原因: {filter_reason}")
                         digit = 0
                         filtered_count += 1
                     # 检查右上角是否在中间位置左边
                     elif x_max < center_x:
                         filter_type = "position_right"
                         filter_reason = f"右上角位置({x_max})在方格中间({center_x})左边"
-                        print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                        print(f"  → 过滤原因: {filter_reason}")
                         digit = 0
                         filtered_count += 1
                 
@@ -520,10 +594,10 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                         aspect_ratio = digit_height / digit_width
                         
                         # 如果数字是2-9且高宽比不在1-2之间，则过滤掉
-                        if digit >= 2 and digit <= 9 and (aspect_ratio < 1.0 or aspect_ratio > 2.0):
+                        if digit >= 2 and digit <= 9 and (aspect_ratio < 0.89 or aspect_ratio > 2.15):
                             filter_type = "aspect_ratio"
-                            filter_reason = f"数字{digit}的高宽比{aspect_ratio:.2f}不在1-2范围内(高{digit_height}px,宽{digit_width}px)"
-                            print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                            filter_reason = f"数字{digit}的高宽比{aspect_ratio:.2f}不在0.9-2.15范围内(高{digit_height}px,宽{digit_width}px)"
+                            print(f"  → 过滤原因: {filter_reason}")
                             digit = 0
                             filtered_count += 1
                 
@@ -542,15 +616,51 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                     min_distance = min(distance1, distance2)
                     max_distance = max(distance1, distance2)
                     
-                    # 如果最小距离不为0，计算比例
-                    if min_distance > 0:
+                    # 如果最小距离为0，直接过滤
+                    if min_distance == 0:
+                        filter_type = "center_distance"
+                        filter_reason = f"数字{digit}最小中心距离为0(左距离{distance1}px,右距离{distance2}px)"
+                        print(f"  → 过滤原因: {filter_reason}")
+                        digit = 0
+                        filtered_count += 1
+                    else:
                         distance_ratio = max_distance / min_distance
                         
-                        # 如果比例超过2就过滤掉
-                        if distance_ratio > 2.0:
+                        # 如果比例超过2.5就过滤掉
+                        if distance_ratio > 2.5:
                             filter_type = "center_distance"
-                            filter_reason = f"数字{digit}的中心距离比例{distance_ratio:.2f}超过2(左距离{distance1}px,右距离{distance2}px)"
-                            print(f"方格({row},{col})的数字{digit} {filter_reason}，过滤掉")
+                            filter_reason = f"数字{digit}的中心距离比例{distance_ratio:.2f}超过2.5(左距离{distance1}px,右距离{distance2}px)"
+                            print(f"  → 过滤原因: {filter_reason}")
+                            digit = 0
+                            filtered_count += 1
+                
+                # 新增：边距分布比例检查
+                if result_info['found'] and result_info['position'] and digit > 0:
+                    x_min, y_min, x_max, y_max = result_info['position']
+                    
+                    # 在84x84的图像中，方格左边界是0，右边界是84
+                    distance1 = x_min  # 左边框到方格左边的距离
+                    distance2 = 84 - x_max  # 右边框到方格右边框的距离
+                    
+                    # 找出最小和最大距离
+                    min_distance = min(distance1, distance2)
+                    max_distance = max(distance1, distance2)
+                    
+                    # 如果最小距离为0，直接过滤
+                    if min_distance == 0:
+                        filter_type = "margin_ratio"
+                        filter_reason = f"数字{digit}最小边距为0(左边距{distance1}px,右边距{distance2}px)"
+                        print(f"  → 过滤原因: {filter_reason}")
+                        digit = 0
+                        filtered_count += 1
+                    else:
+                        margin_ratio = max_distance / min_distance
+                        
+                        # 如果比例超过2.5就过滤掉
+                        if margin_ratio > 10:
+                            filter_type = "margin_ratio"
+                            filter_reason = f"数字{digit}的边距比例{margin_ratio:.2f}超过2.5(左边距{distance1}px,右边距{distance2}px)"
+                            print(f"  → 过滤原因: {filter_reason}")
                             digit = 0
                             filtered_count += 1
                 
@@ -558,7 +668,7 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 if result_info.get('filtered_reason'):
                     filter_type = "multi_digit"
                     filter_reason = result_info.get('filtered_reason')
-                    print(f"方格({row},{col}) {filter_reason}，过滤掉")
+                    print(f"  → 过滤原因: {filter_reason}")
                     filtered_count += 1
                 
                 # 为过滤类型分配字母
@@ -591,6 +701,8 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                         'digit': digit,  # 这里的digit已经是经过过滤后的结果
                         'bbox': (actual_x_min, actual_y_min, actual_x_max, actual_y_max),
                         'confidence': result_info['confidence'],
+                        'found': True,  # 添加found键
+                        'position': result_info['position'],  # 添加position键
                         'filtered': filter_type is not None,  # 标记是否被过滤
                         'filter_type': filter_type,
                         'filter_reason': filter_reason
@@ -665,6 +777,8 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 description = "高宽比不在1-2范围内"
             elif filter_type == "center_distance":
                 description = "中心距离比例超过2"
+            elif filter_type == "margin_ratio":
+                description = "边距分布比例超过2.5"
             else:
                 description = filter_type
             print(f"  {letter}: {description}")
@@ -696,8 +810,8 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
 
             # 对单元格应用高斯模糊处理
             if cell.size > 0 and cell_w > 0 and cell_h > 0:
-                # 使用与OCR识别相同的预处理方法
-                cell_blurred = preprocess_cell(cell, kernel_size, use_sharpen, blur_kernel_size)
+                # 使用与OCR识别相同的预处理方法，使用动态模糊核大小
+                cell_blurred = preprocess_cell(cell, kernel_size, use_sharpen, dynamic_blur_kernel_size)
                 
                 # 将模糊后的方格放回原位置
                 blurred_grid[cell_y:cell_y + cell_h, cell_x:cell_x + cell_w] = cell_blurred
@@ -739,7 +853,7 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     print(f"识别到 {len(recognized_digits)} 个数字，检测到 {len(detected_content)} 个未识别内容")
     print(f"因尺寸条件过滤掉 {filtered_count} 个可能的误识别")
     
-    return sudoku_array
+    return sudoku_array, dynamic_blur_kernel_size
 
 
 def preprocess_cell(cell, kernel_size, use_sharpen=True, blur_kernel_size=3):
@@ -781,15 +895,16 @@ def recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir
     grid_corners = find_sudoku_grid(processed, output_dir)
 
     # 从网格中提取数字
-    sudoku_digits = extract_digits_from_grid(processed, grid_corners, kernel_size, output_dir, use_sharpen, blur_kernel_size)
+    sudoku_digits, actual_blur_kernel_size = extract_digits_from_grid(processed, grid_corners, kernel_size, output_dir, use_sharpen, blur_kernel_size)
 
-    return sudoku_digits
+    return sudoku_digits, actual_blur_kernel_size
 
 
-def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param, kernel_size, use_sharpen, blur_kernel_size):
+def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param, kernel_size, use_sharpen, blur_kernel_size, actual_blur_kernel_size=None):
     """将数独识别结果保存到txt文件"""
+    actual_blur = actual_blur_kernel_size if actual_blur_kernel_size else blur_kernel_size
     sharpen_suffix = "锐化" if use_sharpen else "无锐化"
-    txt_filename = os.path.join(output_dir, f'数独识别结果_卷积核{kernel_size}_阈值{threshold_param}_模糊{blur_kernel_size}_{sharpen_suffix}.txt')
+    txt_filename = os.path.join(output_dir, f'数独识别结果_卷积核{kernel_size}_阈值{threshold_param}_模糊{actual_blur}_{sharpen_suffix}.txt')
     
     # 获取标准答案
     standard_array = convert_res_to_array(res)
@@ -798,7 +913,7 @@ def save_sudoku_result_to_txt(sudoku_array, output_dir, threshold_param, kernel_
     accuracy_stats = calculate_accuracy(sudoku_array, standard_array)
     
     with open(txt_filename, 'w', encoding='utf-8') as f:
-        f.write(f"数独识别结果 (阈值参数: {threshold_param}, 卷积核大小: {kernel_size}x{kernel_size}, 模糊核大小: {blur_kernel_size}x{blur_kernel_size}, 锐化: {'是' if use_sharpen else '否'})\n")
+        f.write(f"数独识别结果 (阈值参数: {threshold_param}, 卷积核大小: {kernel_size}x{kernel_size}, 模糊核大小: {actual_blur}x{actual_blur}, 锐化: {'是' if use_sharpen else '否'})\n")
         f.write("=" * 70 + "\n\n")
         
         # 标准答案显示
@@ -901,7 +1016,6 @@ def main():
     print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     print("=" * 60)
     
-    image_path = "image7.jpg"
     
     # 固定阈值化参数
     threshold_param = 19
@@ -912,71 +1026,42 @@ def main():
     # 只使用无锐化版本
     use_sharpen = False
     
-    # 测试不同的模糊核大小 - 去掉1，加入11和13
-    blur_kernel_sizes = [7, 9, 11, 13,15,17,19]
-    # blur_kernel_sizes = [13]
+    # 使用默认模糊核大小（实际会根据网格宽度动态选择）
+    blur_kernel_size = 11  # 这个值不重要，会被动态覆盖
     
-    print("开始对比不同模糊核大小的效果...")
+    print("开始数独识别...")
     print(f"阈值参数: {threshold_param}")
     print(f"卷积核大小: {kernel_size}x{kernel_size}")
-    print(f"模糊核大小选项: {blur_kernel_sizes}")
     print(f"标准答案: {res}")
     print(f"锐化处理: 否")
+    print("模糊核大小: 根据网格宽度自动选择")
     
-    # 用于保存所有配置的准确率统计
-    all_accuracy_stats = {}
+    # 创建输出目录
+    output_dir = "sudoku_recognition_result"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     
-    # 测试不同的模糊核大小
-    for blur_kernel_size in blur_kernel_sizes:
-        config_key = f"模糊核{blur_kernel_size}x{blur_kernel_size}"
-        
-        print(f"\n正在处理配置: {config_key}")
-        print(f"  阈值参数: {threshold_param}")
-        print(f"  卷积核大小: {kernel_size}x{kernel_size}")
-        print(f"  模糊核大小: {blur_kernel_size}x{blur_kernel_size}")
-        print(f"  锐化处理: 否")
-        
-        # 为每个配置创建单独的输出目录
-        output_dir = f"模糊对比_卷积核{kernel_size}_阈值{threshold_param}_模糊{blur_kernel_size}"
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        # 识别数独数字
-        result = recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir, use_sharpen, blur_kernel_size)
-        
-        if result is not None:
-            # 将识别结果保存到txt文件并获取准确率统计
-            accuracy_stats = save_sudoku_result_to_txt(result, output_dir, threshold_param, kernel_size, use_sharpen, blur_kernel_size)
-            all_accuracy_stats[config_key] = accuracy_stats
-            
-            # 在控制台显示详细结果
-            total_recognized = sum(sum(1 for digit in row if digit != 0) for row in result)
-            print(f"配置 {config_key}:")
-            print(f"  总体准确率: {accuracy_stats['overall_accuracy']:.1f}%")
-            print(f"  数字识别准确率: {accuracy_stats['filled_accuracy']:.1f}%")
-            print(f"  空格识别准确率: {accuracy_stats['empty_accuracy']:.1f}%")
-            print(f"  识别数字总数: {total_recognized}")
-        else:
-            print(f"配置 {config_key}: 识别失败")
-        
-        print(f"配置 {config_key} 处理完成，结果保存在 {output_dir} 文件夹中")
+    # 识别数独数字
+    result, actual_blur_kernel_size = recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir, use_sharpen, blur_kernel_size)
     
-    print(f"\n模糊对比处理完成！")
-    print("\n准确率对比汇总:")
-    print("配置\t\t\t总体准确率\t数字准确率\t空格准确率")
-    print("-" * 70)
-    for blur_kernel_size in blur_kernel_sizes:
-        config_key = f"模糊核{blur_kernel_size}x{blur_kernel_size}"
-        if config_key in all_accuracy_stats:
-            stats = all_accuracy_stats[config_key]
-            print(f"{config_key}\t\t{stats['overall_accuracy']:.1f}%\t\t{stats['filled_accuracy']:.1f}%\t\t{stats['empty_accuracy']:.1f}%")
-    
-    print("\n你可以对比以下文件夹中的结果：")
-    for blur_kernel_size in blur_kernel_sizes:
-        folder_name = f"模糊对比_卷积核{kernel_size}_阈值{threshold_param}_模糊{blur_kernel_size}"
-        txt_name = f"数独识别结果_卷积核{kernel_size}_阈值{threshold_param}_模糊{blur_kernel_size}_无锐化.txt"
-        print(f"- {folder_name}")
-        print(f"  └── {txt_name}")
+    if result is not None:
+        # 将识别结果保存到txt文件并获取准确率统计
+        accuracy_stats = save_sudoku_result_to_txt(result, output_dir, threshold_param, kernel_size, use_sharpen, blur_kernel_size, actual_blur_kernel_size)
+        
+        # 在控制台显示详细结果
+        total_recognized = sum(sum(1 for digit in row if digit != 0) for row in result)
+        print(f"\n识别完成!")
+        print(f"实际使用的模糊核大小: {actual_blur_kernel_size}x{actual_blur_kernel_size}")
+        print(f"总体准确率: {accuracy_stats['overall_accuracy']:.1f}%")
+        print(f"数字识别准确率: {accuracy_stats['filled_accuracy']:.1f}%")
+        print(f"空格识别准确率: {accuracy_stats['empty_accuracy']:.1f}%")
+        print(f"识别数字总数: {total_recognized}")
+        
+        print(f"\n结果保存在 {output_dir} 文件夹中")
+        txt_name = f"数独识别结果_卷积核{kernel_size}_阈值{threshold_param}_模糊{actual_blur_kernel_size}_无锐化.txt"
+        print(f"详细结果文件: {txt_name}")
+    else:
+        print("识别失败")
     
     # 记录程序结束时间并计算总耗时
     end_time = time.time()
