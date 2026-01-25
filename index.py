@@ -19,8 +19,8 @@ test={
     'image14.jpg':'250600070800010000000000000070000001000032000000000000000007240010900000300000800'
 }
 
-image_path = "image15.jpg"
-res='560782103318500072270003805832075019941028507657001208728006984496857321183200756'
+image_path = "image3.jpg"
+res='008562030006047000002091604605000003080050006790080542004935060067000395009000401'
 
 isForce=0
 blur_kernel_size=5
@@ -233,38 +233,110 @@ def save_image_with_fallback(image, filepath):
     return False
 
 
+def preprocess_for_grid_detection(image):
+    """专门用于网格检测的预处理，保护细边框"""
+    # 转换为灰度图
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+    
+    # 使用更温和的预处理，避免破坏细边框
+    # 1. 轻微的高斯模糊（只去除噪声，不破坏边框）
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    
+    # 2. 使用自适应阈值化，但参数更温和
+    # 增大 blockSize 和 C 值，使阈值化更保守，保护细边框
+    thresh = cv2.adaptiveThreshold(
+        blurred, 255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 
+        15,  # 减小 blockSize，对细边框更敏感
+        5   # 增大 C 值，使阈值更保守
+    )
+    
+    # 3. 形态学闭运算：连接断开的边框线
+    # 使用小的核来连接细边框，但不会过度膨胀
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+    
+    # 4. 可选：轻微膨胀以增强边框
+    # kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    # closed = cv2.dilate(closed, kernel_dilate, iterations=1)
+    
+    return closed
+
+
 def find_sudoku_grid(image, output_dir):
     """找到数独网格的轮廓"""
+    # 使用专门优化的预处理来保护细边框
+    processed_for_detection = preprocess_for_grid_detection(image)
+    
+    # 保存用于检测的预处理图像
+    detection_image = cv2.cvtColor(processed_for_detection, cv2.COLOR_GRAY2BGR)
+    save_image_with_fallback(detection_image, os.path.join(output_dir, '4_5_grid_detection_preprocessed.jpg'))
+    
     # 查找轮廓
-    contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(processed_for_detection, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        print("⚠️ 未找到任何轮廓，尝试使用原始预处理图像")
+        # 如果没找到轮廓，回退到原始预处理方法
+        contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            print("❌ 仍然未找到轮廓")
+            return None
 
     # 找到最大的矩形轮廓（应该是数独网格）
     largest_contour = max(contours, key=cv2.contourArea)
+    
+    # 计算轮廓面积，过滤太小的轮廓
+    image_area = image.shape[0] * image.shape[1]
+    contour_area = cv2.contourArea(largest_contour)
+    area_ratio = contour_area / image_area
+    
+    if area_ratio < 0.1:  # 如果最大轮廓面积小于图片的10%，可能不是网格
+        print(f"⚠️ 最大轮廓面积过小 ({area_ratio*100:.1f}%)，尝试其他方法")
+        # 尝试找面积第二大的轮廓
+        if len(contours) > 1:
+            sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            for contour in sorted_contours[1:]:
+                area_ratio = cv2.contourArea(contour) / image_area
+                if area_ratio > 0.1:
+                    largest_contour = contour
+                    print(f"✓ 使用面积第二大的轮廓 ({area_ratio*100:.1f}%)")
+                    break
 
     # 近似轮廓为矩形
     epsilon = 0.02 * cv2.arcLength(largest_contour, True)
     approx = cv2.approxPolyDP(largest_contour, epsilon, True)
 
     # 保存轮廓检测结果
-    contour_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    contour_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if len(image.shape) == 2 else image.copy()
+    if len(contour_image.shape) == 2:
+        contour_image = cv2.cvtColor(contour_image, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(contour_image, [largest_contour], -1, (0, 255, 0), 2)
     save_image_with_fallback(contour_image, os.path.join(output_dir, '5_largest_contour.jpg'))
 
     # 如果找到了四边形，返回其坐标
     if len(approx) == 4:
         # 保存四边形轮廓
-        quad_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        quad_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if len(image.shape) == 2 else image.copy()
+        if len(quad_image.shape) == 2:
+            quad_image = cv2.cvtColor(quad_image, cv2.COLOR_GRAY2BGR)
         cv2.drawContours(quad_image, [approx], -1, (0, 0, 255), 3)
         save_image_with_fallback(quad_image, os.path.join(output_dir, '6_sudoku_grid_quad.jpg'))
-        print("找到四边形数独网格")
+        print("✓ 找到四边形数独网格")
         return approx.reshape(4, 2)
     else:
         # 如果没有找到完美的四边形，使用边界矩形
         x, y, w, h = cv2.boundingRect(largest_contour)
-        rect_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        rect_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if len(image.shape) == 2 else image.copy()
+        if len(rect_image.shape) == 2:
+            rect_image = cv2.cvtColor(rect_image, cv2.COLOR_GRAY2BGR)
         cv2.rectangle(rect_image, (x, y), (x + w, y + h), (255, 0, 0), 3)
         save_image_with_fallback(rect_image, os.path.join(output_dir, '6_sudoku_grid_rectangle.jpg'))
-        print("使用矩形边界作为数独网格")
+        print("⚠️ 使用矩形边界作为数独网格（未找到完美四边形）")
         return np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
 
 
@@ -393,46 +465,237 @@ def get_blur_kernel_size_by_width(grid_width):
     else:  # >= 1000
         return 19
 
-def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_sharpen=True, blur_kernel_size=3):
-    """从数独网格中提取每个单元格的数字（不使用透视变换）"""
-    # 获取网格的边界矩形
-    x, y, w, h = cv2.boundingRect(grid_corners)
+def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_sharpen=True, blur_kernel_size=3, original_image=None):
+    """从数独网格中提取每个单元格的数字
+    
+    流程：
+    1. 检测到大正方形（数独网格）
+    2. 使用检测到的轮廓精确裁剪（而不是 boundingRect）
+    3. 均分成 9x9 = 81 个小图片
+    4. 对每个小图片分别进行OCR识别
+    """
+    print("=" * 60)
+    print("步骤1: 检测到大正方形网格")
+    print("=" * 60)
+    
+    # 判断是四边形还是矩形
+    use_perspective = False
+    x, y = 0, 0  # 初始化，用于后续绘制
+    
+    if len(grid_corners) == 4:
+        # 如果是四边形，使用透视变换精确裁剪（使用检测到的轮廓）
+        print("✓ 检测到四边形轮廓，使用透视变换精确裁剪（使用绿色边框）")
+        
+        # 将4个角点排序（左上、右上、右下、左下）
+        ordered_corners = order_points(grid_corners)
+        
+        # 计算目标尺寸（使用轮廓的实际宽度和高度）
+        width_top = np.sqrt(((ordered_corners[1][0] - ordered_corners[0][0]) ** 2) + 
+                           ((ordered_corners[1][1] - ordered_corners[0][1]) ** 2))
+        width_bottom = np.sqrt(((ordered_corners[2][0] - ordered_corners[3][0]) ** 2) + 
+                              ((ordered_corners[2][1] - ordered_corners[3][1]) ** 2))
+        height_left = np.sqrt(((ordered_corners[3][0] - ordered_corners[0][0]) ** 2) + 
+                             ((ordered_corners[3][1] - ordered_corners[0][1]) ** 2))
+        height_right = np.sqrt(((ordered_corners[2][0] - ordered_corners[1][0]) ** 2) + 
+                              ((ordered_corners[2][1] - ordered_corners[1][1]) ** 2))
+        
+        # 使用平均尺寸
+        w = int(max(width_top, width_bottom))
+        h = int(max(height_left, height_right))
+        
+        # 目标矩形的4个角点
+        dst = np.array([
+            [0, 0],
+            [w - 1, 0],
+            [w - 1, h - 1],
+            [0, h - 1]
+        ], dtype="float32")
+        
+        # 计算透视变换矩阵
+        M = cv2.getPerspectiveTransform(ordered_corners, dst)
+        
+        # 应用透视变换
+        grid_roi = cv2.warpPerspective(image, M, (w, h))
+        
+        # 保存透视变换矩阵和角点信息，用于后续在原始图像上绘制
+        use_perspective = True
+        perspective_matrix = M
+        perspective_corners = ordered_corners
+        
+        print(f"   尺寸: {w} x {h} 像素")
+        
+    else:
+        # 如果是矩形，使用 boundingRect
+        x, y, w, h = cv2.boundingRect(grid_corners)
+        grid_roi = image[y:y+h, x:x+w]
+        print(f"   使用边界矩形裁剪")
+        print(f"   位置: ({x}, {y})")
+        print(f"   尺寸: {w} x {h} 像素")
     
     # 根据网格宽度动态设置模糊核大小
     dynamic_blur_kernel_size = get_blur_kernel_size_by_width(w)
     print(f"检测到网格宽度: {w}px，自动选择模糊核大小: {dynamic_blur_kernel_size}x{dynamic_blur_kernel_size}")
     
-    # 直接从原始图像中裁剪网格区域
-    grid_roi = image[y:y+h, x:x+w]
-    
     # 保存裁剪的网格区域
     save_image_with_fallback(grid_roi, os.path.join(output_dir, '7_grid_roi.jpg'))
-    print("网格区域裁剪完成")
-
-    # 在裁剪后的图像上绘制网格线，便于观察
+    print("✓ 网格区域裁剪完成")
+    
+    # 创建保存小图片的目录
+    cells_dir = os.path.join(output_dir, 'cells')
+    if not os.path.exists(cells_dir):
+        os.makedirs(cells_dir)
+        print(f"✓ 创建单元格图片目录: {cells_dir}")
+    
+    print("\n" + "=" * 60)
+    print("步骤2: 均分成 9x9 = 81 个小图片")
+    print("=" * 60)
+    
+    # 计算单元格尺寸（均分成9x9）
+    cell_width = w / 9
+    cell_height = h / 9
+    print(f"   每个单元格尺寸: {cell_width:.1f} x {cell_height:.1f} 像素")
+    
+    # 在裁剪后的图像上绘制9x9分割线（10条竖线 + 10条横线 = 20条线）
     grid_with_lines = grid_roi.copy()
     if len(grid_with_lines.shape) == 2:  # 如果是灰度图，转换为彩色
         grid_with_lines = cv2.cvtColor(grid_with_lines, cv2.COLOR_GRAY2BGR)
+    
+    # 首先绘制外边框（显示实际裁剪区域的边界）
+    # 这个边框应该和原始图像上检测到的轮廓对应
+    border_color = (255, 0, 255)  # 洋红色，用于外边框
+    border_thickness = 3
+    cv2.rectangle(grid_with_lines, (0, 0), (w - 1, h - 1), border_color, border_thickness)
+    # 在外边框四个角标注
+    cv2.putText(grid_with_lines, "TL", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 2)  # Top Left
+    cv2.putText(grid_with_lines, "TR", (w - 30, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 2)  # Top Right
+    cv2.putText(grid_with_lines, "BL", (5, h - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 2)  # Bottom Left
+    cv2.putText(grid_with_lines, "BR", (w - 30, h - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 2)  # Bottom Right
+    
+    # 绘制分割线（粗线，便于观察）
+    line_thickness = 2
+    line_color = (0, 255, 0)  # 绿色
+    
+    # 绘制10条竖线（将宽度分成9份）
+    for i in range(10):  # 0到9，共10条线
+        x_pos = int(i * cell_width)
+        cv2.line(grid_with_lines, (x_pos, 0), (x_pos, h), line_color, line_thickness)
+        if i < 9:
+            # 在每条线旁边标注列号
+            cv2.putText(grid_with_lines, str(i), (x_pos + 5, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    
+    # 绘制10条横线（将高度分成9份）
+    for i in range(10):  # 0到9，共10条线
+        y_pos = int(i * cell_height)
+        cv2.line(grid_with_lines, (0, y_pos), (w, y_pos), line_color, line_thickness)
+        if i < 9:
+            # 在每条线旁边标注行号
+            cv2.putText(grid_with_lines, str(i), (5, y_pos + 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    
+    # 在每个单元格中心标注坐标 (row, col)
+    for row in range(9):
+        for col in range(9):
+            center_x = int((col + 0.5) * cell_width)
+            center_y = int((row + 0.5) * cell_height)
+            label = f"({row},{col})"
+            # 计算文字大小
+            font_scale = 0.4
+            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)[0]
+            text_x = center_x - text_size[0] // 2
+            text_y = center_y + text_size[1] // 2
+            # 绘制文字背景（半透明）
+            cv2.rectangle(grid_with_lines, 
+                         (text_x - 2, text_y - text_size[1] - 2),
+                         (text_x + text_size[0] + 2, text_y + 2),
+                         (0, 0, 0), -1)
+            # 绘制文字
+            cv2.putText(grid_with_lines, label, (text_x, text_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), 1)
+    
+    save_image_with_fallback(grid_with_lines, os.path.join(output_dir, '8_grid_with_lines.jpg'))
+    print("✓ 网格分割线图像已保存（显示9x9分割方式）")
+    print(f"   外边框尺寸: {w} x {h} 像素（洋红色边框）")
+    
+    # 如果有原始图像，在原始图像上绘制分割线，显示实际位置
+    if original_image is not None:
+        original_with_lines = original_image.copy()
+        if len(original_with_lines.shape) == 2:
+            original_with_lines = cv2.cvtColor(original_with_lines, cv2.COLOR_GRAY2BGR)
+        
+        # 绘制检测到的网格边界（使用实际检测到的轮廓 - 绿色边框）
+        if len(grid_corners) == 4:
+            # 如果是四边形，绘制四边形轮廓（这就是第5张图上的绿色边框）
+            pts = grid_corners.reshape((-1, 1, 2)).astype(np.int32)
+            cv2.polylines(original_with_lines, [pts], True, (0, 255, 0), 3)  # 绿色，实际检测到的轮廓
+            
+            # 在原始图像上绘制9x9分割线（需要将分割线从裁剪后的图像映射回原始图像）
+            # 创建分割线点（在裁剪后的图像坐标系中）
+            cell_width = w / 9
+            cell_height = h / 9
+            line_color = (0, 255, 0)  # 绿色
+            line_thickness = 1
+            
+            # 绘制竖线（在裁剪后的图像中）
+            for i in range(10):
+                x_pos = i * cell_width
+                # 将点从裁剪后的图像坐标系映射回原始图像
+                src_point = np.array([[[x_pos, 0], [x_pos, h]]], dtype=np.float32)
+                dst_points = cv2.perspectiveTransform(src_point, np.linalg.inv(perspective_matrix))
+                pt1 = tuple(dst_points[0][0].astype(int))
+                pt2 = tuple(dst_points[0][1].astype(int))
+                cv2.line(original_with_lines, pt1, pt2, line_color, line_thickness)
+            
+            # 绘制横线
+            for i in range(10):
+                y_pos = i * cell_height
+                src_point = np.array([[[0, y_pos], [w, y_pos]]], dtype=np.float32)
+                dst_points = cv2.perspectiveTransform(src_point, np.linalg.inv(perspective_matrix))
+                pt1 = tuple(dst_points[0][0].astype(int))
+                pt2 = tuple(dst_points[0][1].astype(int))
+                cv2.line(original_with_lines, pt1, pt2, line_color, line_thickness)
+            
+            # 添加说明文字
+            text_pos = tuple(perspective_corners[0].astype(int))
+            cv2.putText(original_with_lines, "Green: Detected Contour + Grid Lines", 
+                       (text_pos[0], text_pos[1] - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        else:
+            # 如果是矩形，绘制矩形和分割线
+            cv2.rectangle(original_with_lines, (x, y), (x + w, y + h), (0, 255, 0), 3)
+            
+            cell_width = w / 9
+            cell_height = h / 9
+            line_color = (0, 255, 0)  # 绿色
+            line_thickness = 1
+            
+            # 绘制竖线
+            for i in range(10):
+                x_pos = int(x + i * cell_width)
+                cv2.line(original_with_lines, (x_pos, y), (x_pos, y + h), line_color, line_thickness)
+            
+            # 绘制横线
+            for i in range(10):
+                y_pos = int(y + i * cell_height)
+                cv2.line(original_with_lines, (x, y_pos), (x + w, y_pos), line_color, line_thickness)
+            
+            # 添加说明文字
+            cv2.putText(original_with_lines, "Green: Detected Rectangle + Grid Lines", 
+                       (x, y - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        save_image_with_fallback(original_with_lines, os.path.join(output_dir, '8_original_with_grid_lines.jpg'))
+        print("✓ 原始图像上的分割线已保存（8_original_with_grid_lines.jpg）")
+        print(f"   绿色边框和分割线：使用实际检测到的轮廓（与第5张图一致）")
     
     # 创建一个用于绘制数字边界框的图像
     grid_with_digit_boxes = grid_with_lines.copy()
     
     # 创建在二值图上绘制单元格边界的图像
-    # 只取网格区域，不要方框外的内容
-    processed_with_cells = image[y:y+h, x:x+w].copy()
+    # 使用裁剪后的网格区域（grid_roi），而不是从原始图像裁剪
+    processed_with_cells = grid_roi.copy()
     if len(processed_with_cells.shape) == 2:  # 如果是灰度图，转换为彩色以便绘制彩色线条
         processed_with_cells = cv2.cvtColor(processed_with_cells, cv2.COLOR_GRAY2BGR)
-    
-    cell_width = w / 9
-    cell_height = h / 9
-    for i in range(10):  # 绘制10条线（0到9）
-        # 绘制垂直线
-        cv2.line(grid_with_lines, (int(i * cell_width), 0), (int(i * cell_width), h), (0, 255, 0), 1)
-        # 绘制水平线
-        cv2.line(grid_with_lines, (0, int(i * cell_height)), (w, int(i * cell_height)), (0, 255, 0), 1)
-    
-    save_image_with_fallback(grid_with_lines, os.path.join(output_dir, '8_grid_with_lines.jpg'))
-    print("网格线图像已保存")
 
     # 初始化9x9数组
     sudoku_array = []
@@ -444,15 +707,31 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
     filter_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p']
     next_letter_index = 0
 
-    # 计算单元格尺寸
+    # 计算单元格尺寸（均分成9x9）
     cell_width = w / 9
     cell_height = h / 9
+    
+    print(f"   保存位置: {cells_dir}/")
+
+    print("\n" + "=" * 60)
+    print("步骤3: 对每个小图片分别进行OCR识别")
+    print("=" * 60)
+    
+    # 初始化9x9数组
+    sudoku_array = []
+    digit_positions = []  # 存储数字位置信息
+    filtered_count = 0    # 记录被尺寸条件过滤掉的数字数量
+    
+    # 定义过滤原因映射
+    filter_reason_map = {}  # key: 过滤原因类型, value: 字母
+    filter_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p']
+    next_letter_index = 0
 
     print("开始识别每个单元格的数字...")
     for row in range(9):
         sudoku_row = []
         for col in range(9):
-            # 只使用百分比边距
+            # 只使用百分比边距（去除网格线）
             margin_x = int(cell_width * 0.08)
             margin_y = int(cell_height * 0.08)
             
@@ -475,18 +754,31 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                         (cell_x + cell_w, cell_y + cell_h), 
                         (255, 101, 0), 1)  # 蓝色 (BGR格式)，线宽1像素
 
-            # 提取单元格
+            # 提取单元格（第 row 行，第 col 列的小图片）
             cell = grid_roi[cell_y:cell_y + cell_h, cell_x:cell_x + cell_w]
+            
+            # 保存每个小图片到单独文件
+            cell_filename = os.path.join(cells_dir, f'cell_{row}_{col}.jpg')
+            save_image_with_fallback(cell, cell_filename)
 
             # 进一步处理单元格
             if cell.size > 0 and cell_w > 0 and cell_h > 0:
                 # 对单元格进行额外的预处理 - 使用动态模糊核大小
                 cell_cleaned = preprocess_cell(cell, kernel_size, use_sharpen, dynamic_blur_kernel_size)
                 
+                # 保存预处理后的小图片
+                cell_cleaned_filename = os.path.join(cells_dir, f'cell_{row}_{col}_processed.jpg')
+                save_image_with_fallback(cell_cleaned, cell_cleaned_filename)
+                
                 # 调整大小以提高OCR准确性
                 cell_resized = cv2.resize(cell_cleaned, (84, 84))
+                
+                # 保存调整大小后的小图片
+                cell_resized_filename = os.path.join(cells_dir, f'cell_{row}_{col}_resized.jpg')
+                save_image_with_fallback(cell_resized, cell_resized_filename)
 
                 # 使用改进的识别函数获取数字和位置信息
+                print(f"\n识别单元格 ({row}, {col})...")
                 result_info = recognize_digit_with_position_info(cell_resized)
                 
                 original_digit = result_info['digit']  # 保存原始识别结果
@@ -711,7 +1003,11 @@ def extract_digits_from_grid(image, grid_corners, kernel_size, output_dir, use_s
                 sudoku_row.append(0)
 
         sudoku_array.append(sudoku_row)
-        print(f"第 {row + 1} 行识别完成")
+        print(f"✓ 第 {row + 1} 行识别完成 ({sum(1 for d in sudoku_row if d > 0)} 个数字)")
+    
+    print("\n" + "=" * 60)
+    print("步骤4: 识别完成，生成结果")
+    print("=" * 60)
 
     # 在网格图像上绘制数字边界框
     for pos_info in digit_positions:
@@ -894,8 +1190,8 @@ def recognize_sudoku_digits(image_path, threshold_param, kernel_size, output_dir
     # 找到数独网格
     grid_corners = find_sudoku_grid(processed, output_dir)
 
-    # 从网格中提取数字
-    sudoku_digits, actual_blur_kernel_size = extract_digits_from_grid(processed, grid_corners, kernel_size, output_dir, use_sharpen, blur_kernel_size)
+    # 从网格中提取数字（传递原始图像用于绘制）
+    sudoku_digits, actual_blur_kernel_size = extract_digits_from_grid(processed, grid_corners, kernel_size, output_dir, use_sharpen, blur_kernel_size, original_image=image)
 
     return sudoku_digits, actual_blur_kernel_size
 
